@@ -1,39 +1,57 @@
+## OpenCode-Serve · production mode
+## nginx on :7860 (HF exposed) proxies:
+##   /terminal → ttyd on :7681 (real PTY bash, mobile-optimised)
+##   /         → opencode on :8080 (chat UI + REST API + SSE)
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies and nginx
+# XDG dirs — local persistent paths.
+ENV XDG_DATA_HOME=/data/share
+ENV XDG_CONFIG_HOME=/data/config
+ENV XDG_CACHE_HOME=/data/cache
+ENV XDG_STATE_HOME=/data/state
+
+ENV PORT=7860
+
+ARG OPENCODE_VERSION=1.18.3
+ARG TTYD_VERSION=1.7.7
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    ca-certificates \
-    python3 \
-    git \
-    nginx \
-    && rm -rf /var/lib/apt/lists/* \
-    && chmod -R 777 /var/log/nginx /var/lib/nginx /run
+      ca-certificates curl git gnupg python3 python3-pip nginx \
+ && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+      | tar -xz -C /usr/local/bin opencode \
+ && chmod +x /usr/local/bin/opencode \
+ && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64" \
+      -o /usr/local/bin/ttyd \
+ && chmod +x /usr/local/bin/ttyd \
+ && rm -rf /var/lib/apt/lists/*
 
-# Install sing-box
-RUN set -eu \
-    && arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-        amd64|x86_64) SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-amd64.tar.gz" ;; \
-        arm64|aarch64) SINGBOX_URL="https://github.com/SagerNet/sing-box/releases/download/v1.13.14/sing-box-1.13.14-linux-arm64.tar.gz" ;; \
-        *) echo "Unsupported architecture" >&2; exit 1 ;; \
-       esac \
-     && curl -fsSL "$SINGBOX_URL" -o /tmp/singbox.tar.gz \
-     && tar -xzf /tmp/singbox.tar.gz -C /tmp \
-     && mv /tmp/sing-box-1.13.14-linux-*/sing-box /usr/local/bin/sing-box \
-     && chmod +x /usr/local/bin/sing-box \
-     && rm -rf /tmp/singbox* /tmp/sing-box*
+# Install huggingface_hub for sync engine
+RUN pip3 install --quiet --no-cache-dir --break-system-packages "huggingface_hub>=0.23"
 
-WORKDIR /app
-COPY app.py dashboard.html users.json settings.json nginx.conf ./
+# Pre-create /data dirs
+RUN mkdir -p \
+      /data/share/opencode \
+      /data/config/opencode \
+      /data/cache/opencode \
+      /data/state/opencode \
+      /data/logs \
+      /data/workspaces \
+      /projects/default
 
-# Copy nginx config to system location
-RUN cp nginx.conf /etc/nginx/nginx.conf
+COPY cleaner.py         /cleaner.py
+COPY sync_engine.py     /sync_engine.py
+COPY memory_updater.py  /memory_updater.py
+COPY session_watcher.py /session_watcher.py
+COPY memctl.py          /memctl.py
+COPY entrypoint.sh      /entrypoint.sh
+RUN chmod +x /entrypoint.sh /sync_engine.py /memory_updater.py /session_watcher.py /memctl.py \
+ && ln -sf /memctl.py /usr/local/bin/memctl \
+ && rm -f /etc/nginx/sites-enabled/default
 
-ENV PYTHONUNBUFFERED=1
+WORKDIR /projects/default
 
 EXPOSE 7860
 
-CMD ["sh", "-c", "nginx && python3 app.py"]
+ENTRYPOINT ["/entrypoint.sh"]
