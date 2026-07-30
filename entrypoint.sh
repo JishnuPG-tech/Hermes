@@ -1,12 +1,12 @@
-#!/bin/sh
+﻿#!/bin/sh
 # OpenCode-Serve entrypoint
 #
 #  nginx    :7860  (HF exposed)
-#    /terminal  → ttyd  :7681  — real PTY bash, mobile-optimised
-#    /          → opencode :8080 — chat UI + REST API + SSE
+#    /terminal  â†’ ttyd  :7681  â€” real PTY bash, mobile-optimised
+#    /          â†’ opencode :8080 â€” chat UI + REST API + SSE
 #  sshd     :22   (internal only)
-#    ↑ exposed via bore transparent TCP tunnel
-#      Termius → bore.pub:PORT → raw TCP → sshd:22
+#    â†‘ exposed via bore transparent TCP tunnel
+#      Termius â†’ bore.pub:PORT â†’ raw TCP â†’ sshd:22
 #      (no SSH interception = full PTY, arrow keys, Ctrl+C, vim)
 #
 set -u
@@ -19,7 +19,7 @@ echo "============================================"
 # Prevent git ownership errors
 git config --global --add safe.directory '*' 2>/dev/null || true
 
-# ─── Data directories ───
+# â”€â”€â”€ Data directories â”€â”€â”€
 echo "[INIT] Setting up /data directories..."
 mkdir -p /data/share/opencode 2>/dev/null || echo "[WARN] Could not create /data/share/opencode"
 mkdir -p /data/config/opencode 2>/dev/null || echo "[WARN] Could not create /data/config/opencode"
@@ -28,12 +28,12 @@ mkdir -p /data/state/opencode 2>/dev/null || echo "[WARN] Could not create /data
 mkdir -p /data/workspaces /data/logs /root/.ssh 2>/dev/null || true
 chmod 700 /root/.ssh
 
-# ─── Restore persistent storage from HF Dataset ──────────────────────
+# â”€â”€â”€ Restore persistent storage from HF Dataset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[RESTORE] Restoring workspace from HF Dataset..."
 python3 /sync_engine.py restore 2>&1 | tee -a /data/logs/sync.log
 echo "[RESTORE] Done."
 
-# ─── OpenCode config ─────────────────────────────────────────────────
+# â”€â”€â”€ OpenCode config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[CONFIG] Setting up default configuration..."
 python3 -c "
 import json, os
@@ -66,7 +66,7 @@ json.dump(d, open(p, 'w'), indent=2)
 print('[CONFIG] Wrote base config with model:', d.get('model'))
 " || true
 
-# ─── Bootstrap persistent memory directory ───────────────────────────────────
+# â”€â”€â”€ Bootstrap persistent memory directory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Creates /projects/default/memory/{GLOBAL,PROJECT,CONVENTIONS,TODO}.md with
 # starter templates if they don't exist yet.  Existing files are never touched.
 echo "[MEMORY] Bootstrapping memory directory..."
@@ -153,7 +153,7 @@ templates = {
 <!-- Future features, improvements, ideas -->
 
 ## Completed (recent)
-<!-- Recently completed tasks — remove when no longer relevant -->
+<!-- Recently completed tasks â€” remove when no longer relevant -->
 """,
 }
 
@@ -166,18 +166,18 @@ for name, content in templates.items():
         print(f"[MEMORY] Existing:  memory/{name} ({fp.stat().st_size} bytes)")
 INIT_MEMORY
 
-# ─── Load persistent memory → opencode.json instructions ──────────────────────
+# â”€â”€â”€ Load persistent memory â†’ opencode.json instructions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # memory_updater.py assembles all memory sources (GLOBAL.md, PROJECT.md,
 # CONVENTIONS.md, TODO.md, recent session summaries, workspace auto-scan)
 # into the `instructions` field of opencode.json.  OpenCode injects this
 # as a system-level prompt for every new conversation automatically.
-echo "[MEMORY] Assembling memory context → opencode.json..."
+echo "[MEMORY] Assembling memory context â†’ opencode.json..."
 python3 /memory_updater.py once
 
 echo "[CONFIG] Current configuration:"
 cat /data/config/opencode/opencode.json 2>/dev/null || echo "{}"
 
-# ─── Detect and remove malformed SQLite databases ───
+# â”€â”€â”€ Detect and remove malformed SQLite databases â”€â”€â”€
 echo "[DB] Checking database integrity..."
 DB_PATH="/data/share/opencode/opencode.db"
 if [ -f "$DB_PATH" ]; then
@@ -192,7 +192,7 @@ try:
         raise ValueError(f'Integrity check failed: {row}')
     print('[DB] Integrity check passed: OK')
 except Exception as e:
-    print(f'[DB] Error: {e} — removing corrupt database files')
+    print(f'[DB] Error: {e} â€” removing corrupt database files')
     for f in glob.glob('$DB_PATH*'):
         try:
             os.remove(f)
@@ -204,7 +204,7 @@ else
     echo "[DB] No database found (fresh start)"
 fi
 
-# ─── nginx: minimal reverse proxy ───────────────────────────────────
+# â”€â”€â”€ nginx: minimal reverse proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 cat > /etc/nginx/nginx.conf << 'NGINX_CONF'
 events { worker_connections 1024; }
 http {
@@ -212,14 +212,18 @@ http {
     default_type  application/octet-stream;
 
     server {
-        listen 7860;
+        listen 10000;
 
-        # Root: serve OpenCode chat UI directly.
-        # Returns 200 with a client-side redirect so HF Spaces iframe proxies
-        # (which may swallow HTTP 3xx responses) still land on the chat.
+        # Root: proxy directly to opencode serve (Render direct URL access)
         location = / {
-            default_type text/html;
-            return 200 '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenCode</title><script>window.location.replace("/server")</script><meta http-equiv="refresh" content="0;url=/server"></head><body style="margin:0;background:#09090b;color:#a1a1aa;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh"><p>Loading OpenCode...</p></body></html>';
+            proxy_pass         http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header   Upgrade $http_upgrade;
+            proxy_set_header   Connection $http_connection;
+            proxy_set_header   Host $host;
+            proxy_set_header   X-Real-IP $remote_addr;
+            proxy_buffering    off;
+            proxy_read_timeout 86400;
         }
 
         # Terminal (ttyd PTY)
@@ -232,7 +236,7 @@ http {
             proxy_read_timeout 86400;
         }
 
-        # OpenCode — everything else
+        # OpenCode â€” everything else
         location / {
             proxy_pass         http://127.0.0.1:8080;
             proxy_http_version 1.1;
@@ -249,25 +253,25 @@ NGINX_CONF
 nginx
 echo "[NGINX] Started."
 
-# ─── Start DB self-healing daemon ────────────────────────────────────
+# â”€â”€â”€ Start DB self-healing daemon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[CLEANER] Starting self-healing daemon..."
 python3 /cleaner.py &
 
-# ─── Start background sync daemon ────────────────────────────────────
+# â”€â”€â”€ Start background sync daemon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[SYNC] Starting background sync daemon..."
 python3 /sync_engine.py watch 2>&1 | tee -a /data/logs/sync.log &
 echo "[SYNC] Sync daemon started. Logs: /data/logs/sync.log"
 
-# ─── Start memory live-watcher ───────────────────────────────────────────────
+# â”€â”€â”€ Start memory live-watcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Watches memory/GLOBAL.md, memory/PROJECT.md, memory/CONVENTIONS.md,
-# memory/TODO.md, memory/sessions/, and workspace files (README, package.json…)
+# memory/TODO.md, memory/sessions/, and workspace files (README, package.jsonâ€¦)
 # every 15 seconds.  When any source changes, re-assembles the full memory
 # context and updates opencode.json so the NEXT new session picks it up.
 echo "[MEMORY] Starting memory live-watcher..."
 python3 /memory_updater.py watch 2>&1 | tee -a /data/logs/memory.log &
 echo "[MEMORY] Live-watcher started. Logs: /data/logs/memory.log"
 
-# ─── Start session summariser daemon ─────────────────────────────────────────
+# â”€â”€â”€ Start session summariser daemon â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Polls OpenCode's SQLite DB every 30 seconds.  When a conversation has been
 # idle for 5+ minutes and has at least 2 user messages, it writes a compact
 # markdown summary to /projects/default/memory/sessions/YYYY-MM-DD_HH-MM_ID.md.
@@ -277,12 +281,12 @@ echo "[SESSION] Starting session summariser daemon..."
 python3 /session_watcher.py 2>&1 | tee -a /data/logs/sessions.log &
 echo "[SESSION] Session summariser started. Logs: /data/logs/sessions.log"
 
-# ─── Ensure project dir exists ───────────────────────────────────────
+# â”€â”€â”€ Ensure project dir exists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 mkdir -p /projects/default
 cd /projects/default
 [ -d .git ] || git init -q 2>/dev/null || true
 
-# ─── ttyd: real PTY bash on :7681 ────────────────────────────────────
+# â”€â”€â”€ ttyd: real PTY bash on :7681 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[TERMINAL] ttyd on :7681 (base-path /terminal) ..."
 nohup ttyd -p 7681 -i 0.0.0.0 \
   -b /terminal \
@@ -293,14 +297,14 @@ nohup ttyd -p 7681 -i 0.0.0.0 \
   -t scrollback=2000 \
   bash -l > /data/logs/ttyd.log 2>&1 &
 
-# ─── Test OpenCode Zen API reachability ─────────────────────────────
+# â”€â”€â”€ Test OpenCode Zen API reachability â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[NET] Testing OpenCode Zen API..."
 ZEN_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "https://opencode.ai/zen/v1/models" 2>/dev/null || echo "000")
 echo "[NET] OpenCode Zen API: $ZEN_STATUS"
 if [ "$ZEN_STATUS" != "200" ]; then
-    echo "[NET] WARNING: Zen API unreachable — free model responses may fail"
+    echo "[NET] WARNING: Zen API unreachable â€” free model responses may fail"
 fi
 
-# ─── OpenCode on :8080 (nginx proxies / → here) ──────────────────────
+# â”€â”€â”€ OpenCode on :8080 (nginx proxies / â†’ here) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 echo "[OPENCODE] opencode serve on :8080 ..."
 exec opencode serve --port 8080 --hostname 127.0.0.1
