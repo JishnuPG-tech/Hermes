@@ -1,32 +1,33 @@
-# Ultra-Lightweight Render 512MB RAM Dockerfile for OpenCode Serve Lite
-FROM python:3.11-slim
+# Official OpenCode-Serve for Render 512MB RAM Architecture
+FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONMALLOC=malloc
-ENV PYTHONUNBUFFERED=1
-ENV MALLOC_TRIM_THRESHOLD_=65536
 ENV PORT=10000
 
-WORKDIR /app
+ENV XDG_DATA_HOME=/data/share
+ENV XDG_CONFIG_HOME=/data/config
+ENV XDG_CACHE_HOME=/data/cache
+ENV XDG_STATE_HOME=/data/state
 
-# Install minimal system dependencies
+ARG OPENCODE_VERSION=1.18.3
+
+# Install minimal dependencies & official OpenCode binary
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git \
+      ca-certificates curl git python3 python3-pip \
+ && curl -fsSL "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+      | tar -xz -C /usr/local/bin opencode \
+ && chmod +x /usr/local/bin/opencode \
  && rm -rf /var/lib/apt/lists/*
 
-# Install lightweight Python dependencies
-RUN pip install --no-cache-dir \
-      fastapi \
-      "uvicorn[standard]" \
-      "pydantic>=2.0" \
-      python-dotenv \
-      "huggingface_hub>=0.23"
+# Install huggingface_hub for background workspace sync
+RUN pip3 install --quiet --no-cache-dir --break-system-packages "huggingface_hub>=0.23"
 
-# Copy consolidated single-process application files
-COPY opencode_serve_lite.py /app/opencode_serve_lite.py
-COPY sync_engine.py         /app/sync_engine.py
-COPY README.md              /app/README.md
+COPY sync_engine.py      /sync_engine.py
+COPY entrypoint_lite.sh /entrypoint_lite.sh
+RUN chmod +x /entrypoint_lite.sh /sync_engine.py
+
+WORKDIR /projects/default
 
 EXPOSE 10000
 
-CMD ["python", "opencode_serve_lite.py"]
+ENTRYPOINT ["/entrypoint_lite.sh"]
