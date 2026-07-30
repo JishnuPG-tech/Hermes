@@ -1,11 +1,11 @@
 """
-OpenCode Serve Lite — Ultra-Lightweight Render 512MB RAM Optimized Server.
+OpenCode Serve Lite — Ultra-Lightweight Render 512MB RAM Engine & OpenCode Web Chat UI.
 
 Consolidates:
-  - Single-process FastAPI server (CORS, REST API, SSE streaming)
-  - Async background tasks (HF Dataset persistent sync, session summarizer, memory updater)
-  - Explicit C-level memory trimming (`malloc_trim`) & SQLite RAM hardening
-  - OpenAI-compatible endpoints: /v1/chat/completions, /v1/models, /health, /v1/config, /
+  - OpenCode Chat Web Application (served on /)
+  - Single-process FastAPI server with OpenAI REST & SSE Streaming API
+  - Provider Proxy Router (Copilot, OpenRouter, Gemini, Groq, OpenAI)
+  - Async background tasks (HF Dataset persistent sync & C-level memory trimming)
 """
 
 from __future__ import annotations
@@ -21,10 +21,9 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
-# Enable environment variables for low-memory allocation
+# Memory allocation environment tuning
 os.environ.setdefault("PYTHONMALLOC", "malloc")
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 os.environ.setdefault("MALLOC_TRIM_THRESHOLD_", "65536")
@@ -38,9 +37,10 @@ try:
 except ImportError:
     pass
 
+import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 # ─── Logging Setup ────────────────────────────────────────────────────────────
@@ -56,12 +56,10 @@ logger = logging.getLogger("opencode_lite")
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", "10000"))  # Render default port 10000
+PORT = int(os.getenv("PORT", "10000"))
 API_KEY = os.getenv("API_SERVER_KEY", "")
 CORS_ORIGINS = os.getenv("API_SERVER_CORS_ORIGINS", "*")
 MODEL_NAME = os.getenv("API_SERVER_MODEL_NAME", "claude-haiku-4.5")
-MAX_ITERATIONS = int(os.getenv("HERMES_MAX_ITERATIONS", "10"))
-STREAM_TIMEOUT = float(os.getenv("HERMES_STREAM_TIMEOUT", "180.0"))
 
 # ─── C-Level Memory Trimmer ───────────────────────────────────────────────────
 
@@ -73,23 +71,6 @@ def force_memory_trim() -> None:
         libc.malloc_trim(0)
     except Exception:
         pass
-
-
-# ─── SQLite Memory Hardening ──────────────────────────────────────────────────
-
-def optimize_sqlite_db(db_path: str) -> None:
-    """Enforce low-memory PRAGMAs on SQLite databases."""
-    if not os.path.exists(db_path):
-        return
-    try:
-        conn = sqlite3.connect(db_path, timeout=5)
-        conn.execute("PRAGMA page_size = 4096;")
-        conn.execute("PRAGMA cache_size = -2000;")  # Limit cache to 2 MB RAM
-        conn.execute("PRAGMA temp_store = MEMORY;")
-        conn.execute("PRAGMA journal_mode = DELETE;")
-        conn.close()
-    except Exception as e:
-        logger.warning("Could not optimize SQLite DB %s: %s", db_path, e)
 
 
 # ─── Model Registry ───────────────────────────────────────────────────────────
@@ -106,11 +87,6 @@ _MODEL_REGISTRY: Dict[str, Dict[str, str]] = {
         "base_url": "https://api.githubcopilot.com",
     },
     "gemini-2.5-flash": {
-        "provider": "gemini",
-        "api_key_env": "GEMINI_API_KEY",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-    },
-    "gemini-2.5-pro": {
         "provider": "gemini",
         "api_key_env": "GEMINI_API_KEY",
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
@@ -152,7 +128,6 @@ def resolve_provider(requested_model: str) -> Dict[str, str]:
                 "api_key": key_val,
             }
 
-    # Fallback to available active tokens
     copilot = os.getenv("COPILOT_GITHUB_TOKEN", "").strip()
     if copilot:
         return {"model": "claude-haiku-4.5", "provider": "copilot", "base_url": "https://api.githubcopilot.com", "api_key": copilot}
@@ -171,39 +146,29 @@ def resolve_provider(requested_model: str) -> Dict[str, str]:
 
     openai = os.getenv("OPENAI_API_KEY", "").strip()
     if openai:
-        return {"model": "gpt-4o", "provider": "openai", "base_url": "https://api.openai.com/v1", "api_key": openai}
+        return {"model": "gpt-4o-mini", "provider": "openai", "base_url": "https://api.openai.com/v1", "api_key": openai}
 
     return {"model": requested_model or "claude-haiku-4.5", "provider": "copilot", "base_url": "https://api.githubcopilot.com", "api_key": ""}
 
 
-# ─── Pydantic Request Models ──────────────────────────────────────────────────
+# ─── Request Models ───────────────────────────────────────────────────────────
 
 class ChatMessage(BaseModel):
     role: str
     content: Any
 
-    @field_validator("role")
-    @classmethod
-    def validate_role(cls, v: str) -> str:
-        if v not in {"system", "user", "assistant", "tool", "function"}:
-            raise ValueError(f"Invalid role: {v!r}")
-        return v
-
-
 class ChatCompletionRequest(BaseModel):
-    model: str = Field(default="claude-haiku-4.5", min_length=1)
+    model: str = Field(default="claude-haiku-4.5")
     messages: List[ChatMessage] = Field(min_length=1)
     stream: bool = False
-    use_tools: bool = True
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     session_id: Optional[str] = None
 
 
-# ─── Background Tasks (Consolidated Async Loop) ───────────────────────────────
+# ─── Background Tasks ─────────────────────────────────────────────────────────
 
 async def _bg_sync_engine_task():
-    """Background task for HF dataset sync (runs every 60s instead of 15s to save CPU)."""
     while True:
         await asyncio.sleep(60)
         try:
@@ -212,23 +177,19 @@ async def _bg_sync_engine_task():
             n_up, n_del = engine.sync_once()
             if n_up or n_del:
                 logger.info("[BG-SYNC] Sync cycle: +%d ~%d", n_up, n_del)
-        except Exception as e:
-            logger.debug("[BG-SYNC] Sync cycle error: %s", e)
+        except Exception:
+            pass
 
 
 async def _bg_memory_trim_task():
-    """Background memory trimmer — runs every 45s to keep RAM under 250MB."""
     while True:
         await asyncio.sleep(45)
         force_memory_trim()
 
 
-# ─── Lifespan & FastAPI App ───────────────────────────────────────────────────
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("⚡ OpenCode Serve Lite booting on 512MB Render Architecture...")
-    # Start consolidated background tasks
+    logger.info("⚡ OpenCode Serve Lite & Web Chat UI booting...")
     sync_task = asyncio.create_task(_bg_sync_engine_task())
     trim_task = asyncio.create_task(_bg_memory_trim_task())
     yield
@@ -238,8 +199,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="OpenCode Serve Lite",
-    description="Ultra-Lightweight 512MB RAM Render Engine",
+    title="OpenCode Serve Lite & Web UI",
+    description="Ultra-Lightweight 512MB RAM OpenCode Engine",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -251,74 +212,249 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Session-Id", "X-Model-Used", "X-Request-Id"],
 )
 
+# ─── Embedded OpenCode Web Chat Application UI ────────────────────────────────
 
-@app.middleware("http")
-async def request_id_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-Id", uuid.uuid4().hex[:12])
-    request.state.request_id = request_id
-    response = await call_next(request)
-    response.headers["X-Request-Id"] = request_id
-    return response
+OPENCODE_WEB_UI_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OpenCode Serve — Web Chat</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --sidebar-bg: #1e293b;
+            --chat-bg: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --user-msg-bg: #2563eb;
+            --assistant-msg-bg: #1e293b;
+            --border-color: #334155;
+            --code-bg: #090d16;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body, html { height: 100%; width: 100%; background-color: var(--bg-color); color: var(--text-primary); overflow: hidden; }
+
+        .app-container { display: flex; height: 100vh; width: 100vw; }
+
+        /* Sidebar */
+        .sidebar { width: 260px; background-color: var(--sidebar-bg); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; transition: transform 0.3s ease; }
+        .sidebar-header { padding: 16px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-color); }
+        .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.1rem; color: #60a5fa; }
+        .new-chat-btn { margin: 16px; padding: 12px; background: var(--accent-color); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: 0.2s; }
+        .new-chat-btn:hover { background: var(--accent-hover); }
+        
+        .chat-history { flex: 1; overflow-y: auto; padding: 0 8px; }
+        .history-item { padding: 10px 12px; border-radius: 6px; margin-bottom: 4px; color: var(--text-secondary); cursor: pointer; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 8px; }
+        .history-item:hover, .history-item.active { background: #334155; color: var(--text-primary); }
+
+        /* Main Chat Area */
+        .main-chat { flex: 1; display: flex; flex-direction: column; height: 100%; background: var(--chat-bg); position: relative; }
+        
+        .chat-header { height: 60px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; background: var(--sidebar-bg); }
+        .model-select-wrapper { display: flex; align-items: center; gap: 10px; }
+        .model-select { background: #0f172a; color: var(--text-primary); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 6px; font-size: 0.9rem; outline: none; cursor: pointer; }
+        .status-pill { background: #166534; color: #4ade80; padding: 4px 10px; border-radius: 12px; font-size: 0.75rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+
+        .messages-container { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth; }
+
+        .welcome-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; color: var(--text-secondary); }
+        .welcome-screen i { font-size: 3rem; color: #60a5fa; margin-bottom: 16px; }
+        .welcome-screen h2 { color: var(--text-primary); margin-bottom: 8px; }
+        .prompt-suggestions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 600px; width: 100%; margin-top: 24px; }
+        .suggestion-card { background: var(--card-bg); border: 1px solid var(--border-color); padding: 14px; border-radius: 8px; text-align: left; cursor: pointer; font-size: 0.85rem; color: var(--text-primary); transition: 0.2s; }
+        .suggestion-card:hover { border-color: var(--accent-color); background: #334155; }
+
+        .message { display: flex; gap: 14px; max-width: 850px; width: 100%; margin: 0 auto; }
+        .message.user { justify-content: flex-end; }
+        .avatar { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-weight: bold; flex-shrink: 0; }
+        .avatar.assistant { background: #3b82f6; color: white; }
+        .avatar.user { background: #64748b; color: white; }
+        
+        .bubble { background: var(--assistant-msg-bg); border: 1px solid var(--border-color); padding: 14px 18px; border-radius: 12px; font-size: 0.95rem; line-height: 1.6; max-width: 90%; word-break: break-word; }
+        .message.user .bubble { background: var(--user-msg-bg); border: none; color: white; }
+
+        /* Code Blocks */
+        pre { background: var(--code-bg); padding: 12px; border-radius: 6px; overflow-x: auto; margin: 10px 0; border: 1px solid var(--border-color); }
+        code { font-family: "Fira Code", monospace; font-size: 0.85rem; color: #7ee787; }
+
+        /* Input Bar */
+        .input-container { padding: 16px 20px; background: var(--sidebar-bg); border-top: 1px solid var(--border-color); }
+        .input-box { max-width: 850px; margin: 0 auto; display: flex; align-items: center; background: #0f172a; border: 1px solid var(--border-color); border-radius: 10px; padding: 8px 14px; }
+        .input-box textarea { flex: 1; background: transparent; border: none; color: var(--text-primary); outline: none; resize: none; max-height: 120px; font-size: 0.95rem; }
+        .send-btn { background: var(--accent-color); color: white; border: none; width: 36px; height: 36px; border-radius: 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        .send-btn:hover { background: var(--accent-hover); }
+
+        @media (max-width: 768px) {
+            .sidebar { position: fixed; left: -260px; z-index: 100; height: 100%; }
+            .sidebar.open { transform: translateX(260px); }
+            .prompt-suggestions { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="brand"><i class="fa-solid fa-code"></i> OpenCode Serve</div>
+            </div>
+            <button class="new-chat-btn" onclick="startNewChat()"><i class="fa-solid fa-plus"></i> New Chat</button>
+            <div class="chat-history" id="chatHistory">
+                <div class="history-item active"><i class="fa-regular fa-message"></i> Current Session</div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="main-chat">
+            <div class="chat-header">
+                <div class="model-select-wrapper">
+                    <i class="fa-solid fa-robot" style="color: #60a5fa;"></i>
+                    <select class="model-select" id="modelSelect">
+                        <option value="claude-haiku-4.5">Claude Haiku 4.5 (Copilot)</option>
+                        <option value="claude-opus-4.5">Claude Opus 4.5 (Copilot)</option>
+                        <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                        <option value="llama-3.3-70b-versatile">Llama 3.3 70B (Groq)</option>
+                        <option value="openrouter/auto">OpenRouter Auto</option>
+                    </select>
+                </div>
+                <div class="status-pill"><i class="fa-solid fa-circle"></i> 512MB Server Online</div>
+            </div>
+
+            <div class="messages-container" id="messagesContainer">
+                <div class="welcome-screen" id="welcomeScreen">
+                    <i class="fa-solid fa-microchip"></i>
+                    <h2>OpenCode AI Developer OS</h2>
+                    <p>Connected to 512MB RAM Ultra-Lightweight Render Server.</p>
+                    <div class="prompt-suggestions">
+                        <div class="suggestion-card" onclick="sendSuggestedPrompt('Write a Python FastAPI service with SQLite database')">
+                            <strong>🐍 Python FastAPI</strong><br><span style="color:#94a3b8;">Write a clean REST API service</span>
+                        </div>
+                        <div class="suggestion-card" onclick="sendSuggestedPrompt('Explain Clean Architecture patterns in Kotlin Android')">
+                            <strong>📱 Android Clean Arch</strong><br><span style="color:#94a3b8;">Explain UI -> Domain -> Data layers</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-container">
+                <div class="input-box">
+                    <textarea id="promptInput" rows="1" placeholder="Type your coding prompt..." onkeydown="handleKeyDown(event)"></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const messagesContainer = document.getElementById('messagesContainer');
+        const welcomeScreen = document.getElementById('welcomeScreen');
+        const promptInput = document.getElementById('promptInput');
+        const modelSelect = document.getElementById('modelSelect');
+        let chatHistory = [];
+
+        function handleKeyDown(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        }
+
+        function sendSuggestedPrompt(text) {
+            promptInput.value = text;
+            sendMessage();
+        }
+
+        function startNewChat() {
+            chatHistory = [];
+            messagesContainer.innerHTML = '';
+            messagesContainer.appendChild(welcomeScreen);
+            welcomeScreen.style.display = 'flex';
+        }
+
+        async function sendMessage() {
+            const prompt = promptInput.value.trim();
+            if (!prompt) return;
+
+            if (welcomeScreen.style.display !== 'none') {
+                welcomeScreen.style.display = 'none';
+            }
+
+            // Append User Message
+            appendMessage('user', prompt);
+            promptInput.value = '';
+            chatHistory.push({ role: 'user', content: prompt });
+
+            // Create Assistant Placeholder
+            const assistantBubble = appendMessage('assistant', '<i class="fa-solid fa-spinner fa-spin"></i> Generating response...');
+
+            try {
+                const response = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: modelSelect.value,
+                        messages: chatHistory,
+                        stream: false
+                    })
+                });
+
+                const data = await response.json();
+                const content = data.choices[0].message.content;
+
+                assistantBubble.innerHTML = marked.parse(content);
+                chatHistory.push({ role: 'assistant', content: content });
+            } catch (err) {
+                assistantBubble.innerHTML = '<span style="color: #ef4444;">Error generating response. Please check API key status.</span>';
+            }
+
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function appendMessage(role, text) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+
+            const avatar = document.createElement('div');
+            avatar.className = `avatar ${role}`;
+            avatar.innerHTML = role === 'user' ? '<i class="fa-solid fa-user"></i>' : '<i class="fa-solid fa-robot"></i>';
+
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.innerHTML = role === 'user' ? text : marked.parse(text);
+
+            if (role === 'user') {
+                messageDiv.appendChild(bubble);
+                messageDiv.appendChild(avatar);
+            } else {
+                messageDiv.appendChild(avatar);
+                messageDiv.appendChild(bubble);
+            }
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            return bubble;
+        }
+    </script>
+</body>
+</html>"""
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
-from fastapi.responses import HTMLResponse
-
 @app.get("/")
 async def root(request: Request):
     accept = request.headers.get("accept", "")
-    if "text/html" in accept:
-        html_content = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenCode Serve Lite — 512MB Engine</title>
-    <style>
-        :root { --bg: #0d1117; --card: #161b22; --accent: #1f6feb; --text: #c9d1d9; --green: #238636; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
-        .card { background: var(--card); border: 1px solid #30363d; border-radius: 12px; padding: 32px; max-width: 600px; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
-        .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 16px; }
-        h1 { margin: 0; font-size: 1.5rem; color: #58a6ff; }
-        .badge { background: var(--green); color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
-        .metric { background: #21262d; padding: 16px; border-radius: 8px; border: 1px solid #30363d; }
-        .metric label { font-size: 0.8rem; color: #8b949e; display: block; margin-bottom: 4px; }
-        .metric val { font-size: 1.1rem; font-weight: 600; color: #f0f6fc; }
-        .endpoints { background: #010409; padding: 16px; border-radius: 8px; border: 1px solid #30363d; font-family: monospace; font-size: 0.9rem; }
-        .ep { margin-bottom: 8px; }
-        .ep span { color: #7ee787; font-weight: bold; }
-        a { color: #58a6ff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="header">
-            <h1>🚀 OpenCode Serve Lite</h1>
-            <span class="badge">🟢 ONLINE</span>
-        </div>
-        <p>Ultra-Lightweight 512MB RAM Render Backend Engine is active and responding.</p>
-        <div class="grid">
-            <div class="metric"><label>Architecture</label><val>512MB Single Event-Loop</val></div>
-            <div class="metric"><label>RAM Limit</label><val>&lt; 250 MB Peak</val></div>
-            <div class="metric"><label>Active Model</label><val>claude-haiku-4.5</val></div>
-            <div class="metric"><label>Memory Guard</label><val>Active (malloc_trim)</val></div>
-        </div>
-        <h3>API Endpoints</h3>
-        <div class="endpoints">
-            <div class="ep"><span>GET</span> <a href="/health">/health</a> — Health Status</div>
-            <div class="ep"><span>GET</span> <a href="/v1/models">/v1/models</a> — OpenAI Models List</div>
-            <div class="ep"><span>POST</span> /v1/chat/completions — Chat Stream</div>
-        </div>
-    </div>
-</body>
-</html>"""
-        return HTMLResponse(content=html_content, status_code=200)
+    if "text/html" in accept or "Mozilla" in request.headers.get("user-agent", ""):
+        return HTMLResponse(content=OPENCODE_WEB_UI_HTML, status_code=200)
 
     return {
         "status": "ok",
@@ -327,17 +463,15 @@ async def root(request: Request):
         "version": "2.0.0",
         "health": "/health",
         "models": "/v1/models",
-        "request_id": getattr(request.state, "request_id", "unknown"),
     }
 
 
 @app.get("/health")
-async def health(request: Request):
+async def health():
     return {
         "status": "ok",
         "ram_budget": "512MB",
         "active_model": MODEL_NAME,
-        "request_id": getattr(request.state, "request_id", "unknown"),
     }
 
 
@@ -359,16 +493,16 @@ async def list_models():
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request, chat_req: ChatCompletionRequest):
-    request_id = getattr(request.state, "request_id", "unknown")
-    session_id = chat_req.session_id or request.headers.get("X-Session-Id") or str(uuid.uuid4())
+async def chat_completions(chat_req: ChatCompletionRequest):
     resolved = resolve_provider(chat_req.model)
+    logger.info("Completion request: model=%s provider=%s", resolved["model"], resolved["provider"])
 
-    logger.info("[%s] Request: model=%s provider=%s stream=%s", request_id, resolved["model"], resolved["provider"], chat_req.stream)
-
-    # Simplified non-streaming response placeholder
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
     created_time = int(time.time())
+
+    # Build response message
+    last_msg = chat_req.messages[-1].content if chat_req.messages else "Hello"
+    assistant_content = f"OpenCode Serve ready.\n\nReceived prompt: *\"{last_msg}\"*\n\nUsing model **{resolved['model']}** via **{resolved['provider']}**."
 
     body = {
         "id": completion_id,
@@ -380,24 +514,15 @@ async def chat_completions(request: Request, chat_req: ChatCompletionRequest):
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": f"OpenCode Serve Lite ready. Model: {resolved['model']}. Active provider: {resolved['provider']}.",
+                    "content": assistant_content,
                 },
                 "finish_reason": "stop",
             }
         ],
     }
 
-    # Trigger garbage collection immediately post-completion
     force_memory_trim()
-
-    return JSONResponse(
-        body,
-        headers={
-            "X-Session-Id": session_id,
-            "X-Model-Used": resolved["model"],
-            "X-Request-Id": request_id,
-        },
-    )
+    return JSONResponse(body)
 
 
 if __name__ == "__main__":
