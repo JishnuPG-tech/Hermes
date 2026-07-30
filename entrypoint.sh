@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # OpenCode-Serve entrypoint
 #
 #  nginx    :7860  (HF exposed)
