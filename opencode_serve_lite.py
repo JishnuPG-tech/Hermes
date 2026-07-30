@@ -266,8 +266,60 @@ async def request_id_middleware(request: Request, call_next):
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
 
+from fastapi.responses import HTMLResponse
+
 @app.get("/")
 async def root(request: Request):
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept:
+        html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenCode Serve Lite — 512MB Engine</title>
+    <style>
+        :root { --bg: #0d1117; --card: #161b22; --accent: #1f6feb; --text: #c9d1d9; --green: #238636; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        .card { background: var(--card); border: 1px solid #30363d; border-radius: 12px; padding: 32px; max-width: 600px; width: 100%; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+        .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 16px; }
+        h1 { margin: 0; font-size: 1.5rem; color: #58a6ff; }
+        .badge { background: var(--green); color: white; padding: 4px 12px; border-radius: 20px; font-size: 0.85rem; font-weight: bold; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+        .metric { background: #21262d; padding: 16px; border-radius: 8px; border: 1px solid #30363d; }
+        .metric label { font-size: 0.8rem; color: #8b949e; display: block; margin-bottom: 4px; }
+        .metric val { font-size: 1.1rem; font-weight: 600; color: #f0f6fc; }
+        .endpoints { background: #010409; padding: 16px; border-radius: 8px; border: 1px solid #30363d; font-family: monospace; font-size: 0.9rem; }
+        .ep { margin-bottom: 8px; }
+        .ep span { color: #7ee787; font-weight: bold; }
+        a { color: #58a6ff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <h1>🚀 OpenCode Serve Lite</h1>
+            <span class="badge">🟢 ONLINE</span>
+        </div>
+        <p>Ultra-Lightweight 512MB RAM Render Backend Engine is active and responding.</p>
+        <div class="grid">
+            <div class="metric"><label>Architecture</label><val>512MB Single Event-Loop</val></div>
+            <div class="metric"><label>RAM Limit</label><val>&lt; 250 MB Peak</val></div>
+            <div class="metric"><label>Active Model</label><val>claude-haiku-4.5</val></div>
+            <div class="metric"><label>Memory Guard</label><val>Active (malloc_trim)</val></div>
+        </div>
+        <h3>API Endpoints</h3>
+        <div class="endpoints">
+            <div class="ep"><span>GET</span> <a href="/health">/health</a> — Health Status</div>
+            <div class="ep"><span>GET</span> <a href="/v1/models">/v1/models</a> — OpenAI Models List</div>
+            <div class="ep"><span>POST</span> /v1/chat/completions — Chat Stream</div>
+        </div>
+    </div>
+</body>
+</html>"""
+        return HTMLResponse(content=html_content, status_code=200)
+
     return {
         "status": "ok",
         "service": "OpenCode Serve Lite",
