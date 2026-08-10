@@ -1,9 +1,11 @@
 ---
-title: MyHermes
-emoji: 🖥️
+title: OpenCode-Web
+emoji: 🚀
 colorFrom: blue
 colorTo: indigo
 sdk: docker
-app_port: 7860
 pinned: false
 ---
+
+# OpenCode-Web
+Clean Hugging Face Space repository.
