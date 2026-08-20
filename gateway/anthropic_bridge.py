@@ -20,18 +20,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(tags=["AnthropicBridge"])
 
-# Upstream OpenAI-compatible endpoint Hermes calls to get completions.
+# Upstream = the Hermes agent API server (localhost inside the container),
+# which itself calls OmniRoute. This gives the app the full agent: persona,
+# memory, skills, tools, and the agentic loop.
 UPSTREAM_URL = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_URL",
-    "https://jishnupg-opencode-cli.hf.space/v1/chat/completions",
+    "http://127.0.0.1:8642/v1/chat/completions",
 )
 UPSTREAM_KEY = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_KEY",
-    os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935"),
+    os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")),
 )
-# Model sent to the upstream. OmniRoute only understands its own routing ids,
-# so always send auto/best-coding regardless of what the app requests. The app
-# still sees its own requested model echoed back in the response.
+# Model sent upstream. Hermes honors its configured default (auto/best-coding
+# via OmniRoute) unless a model_routes alias matches, so this is informational.
 UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "auto/best-coding")
 # Model name the app requested -> echoed back in Anthropic responses.
 DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-3-2503")

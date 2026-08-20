@@ -15,10 +15,15 @@ PUBLIC_PORT="${PUBLIC_PORT:-7860}"
 API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 
-# Anthropic bridge upstream = the same OmniRoute backend.
-ANTHROPIC_BRIDGE_UPSTREAM_URL="${ANTHROPIC_BRIDGE_UPSTREAM_URL:-https://jishnupg-opencode-cli.hf.space/v1/chat/completions}"
-ANTHROPIC_BRIDGE_UPSTREAM_KEY="${ANTHROPIC_BRIDGE_UPSTREAM_KEY:-${OMNIROUTE_API_KEY}}"
+# Anthropic bridge upstream = the Hermes agent (which itself calls OmniRoute).
+# This gives the Claude app the full agent: persona, memory, skills, tools, loop.
+ANTHROPIC_BRIDGE_UPSTREAM_URL="${ANTHROPIC_BRIDGE_UPSTREAM_URL:-http://127.0.0.1:${HERMES_INTERNAL_PORT}/v1/chat/completions}"
+ANTHROPIC_BRIDGE_UPSTREAM_KEY="${ANTHROPIC_BRIDGE_UPSTREAM_KEY:-${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}}"
 ANTHROPIC_BRIDGE_UPSTREAM_MODEL="${ANTHROPIC_BRIDGE_UPSTREAM_MODEL:-auto/best-coding}"
+
+# Export so the public gateway (uvicorn process) picks them up from os.environ.
+export OMNIROUTE_BASE_URL OMNIROUTE_API_KEY API_SERVER_KEY HERMES_INTERNAL_PORT
+export HERMES_MODEL ANTHROPIC_BRIDGE_UPSTREAM_URL ANTHROPIC_BRIDGE_UPSTREAM_KEY ANTHROPIC_BRIDGE_UPSTREAM_MODEL
 
 log_info "OmniRoute backend      : ${OMNIROUTE_BASE_URL}"
 log_info "Hermes model           : ${HERMES_MODEL}"
@@ -58,7 +63,6 @@ gateway:
       port: ${HERMES_INTERNAL_PORT}
       key: ${API_SERVER_KEY}
       cors_origins: "*"
-      direct_model_requests: true
 EOF
 
 # 4. Mirror the same settings into .env (env vars take precedence)
