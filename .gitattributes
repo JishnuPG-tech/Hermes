@@ -1,0 +1,10 @@
+* text=auto
+
+# Guarantee LF everywhere (Linux container; CRLF shebangs break exec)
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.py text eol=lf
+README.md text eol=lf
+.env.example text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

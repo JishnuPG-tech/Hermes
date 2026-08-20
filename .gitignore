@@ -1,0 +1,9 @@
+# Local / generated
+.env
+*.log
+*.sqlite
+*.sqlite3
+hermes_wheel/
+.venv/
+__pycache__/
+*.pyc
