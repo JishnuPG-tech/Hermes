@@ -7,7 +7,8 @@
 FROM diegosouzapw/omniroute:main AS omniroute-source
 
 # Stage 2: Final multi-service runtime
-FROM python:3.11-slim # cache bust 2026-08-25T16:00:32.007152
+# Cache bust: 2026-08-25T16:00:32
+FROM python:3.11-slim
 
 ENV HOME=/root
 ENV HERMES_HOME=/root/.hermes
