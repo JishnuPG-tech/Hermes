@@ -133,4 +133,4 @@ gateway:
       cors_origins: "*"
 ```
 
-To override the backend at deploy time, set the `OMNIROUTE_BASE_URL` / `OMNIROUTE_API_KEY` / `HERMES_MODEL` / `API_SERVER_KEY` Space secrets.
+To override the backend at deploy time, set the `OMNIROUTE_BASE_URL` / `OMNIROUTE_API_KEY` / `HERMES_MODEL` / `API_SERVER_KEY` Space secrets.# Force wake 08/25/2026 17:23:54
