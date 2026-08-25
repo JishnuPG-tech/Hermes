@@ -625,11 +625,31 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
     try:
         await queue.put(ab.create_message_start(msg_id, model))
 
-        openai_messages = []
+        system_instruction = "You are Hermes, an intelligent and helpful AI assistant. Answer the user's query clearly and directly."
+        openai_messages = [{"role": "system", "content": system_instruction}]
+
         for m in messages:
             role = m.get("role") or m.get("sender") or "user"
-            content = m.get("text") or (m.get("content", [{}])[0].get("text", "") if isinstance(m.get("content"), list) and m.get("content") else "")
-            openai_messages.append({"role": role, "content": content})
+            if role in ["human", "user"]:
+                r = "user"
+            elif role in ["assistant", "ai"]:
+                r = "assistant"
+            elif role == "system":
+                r = "system"
+            else:
+                r = "user"
+
+            txt = m.get("content") or m.get("text") or ""
+            if isinstance(txt, list):
+                txt = "".join(
+                    cb.get("text", "") for cb in txt if isinstance(cb, dict) and cb.get("type") == "text"
+                )
+            txt_str = str(txt).strip()
+            if txt_str:
+                openai_messages.append({"role": r, "content": txt_str})
+
+        if not any(m["role"] == "user" for m in openai_messages):
+            openai_messages.append({"role": "user", "content": prompt or "Hello"})
 
         payload = {
             "model": "auto/best-coding",
@@ -683,31 +703,41 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
         await queue.put(ab.create_message_stop())
     except Exception as e:
         logger.error(f"Error in background agent execution for {chat_id}: {e}")
+        # Emit friendly fallback error if stream failed
+        if not text_active and not full_text:
+            err_text = "I'm here and ready to help. Could you please rephrase or try again?"
+            await queue.put(ab.create_content_block_start(0))
+            await queue.put(ab.create_content_block_delta(err_text, 0))
+            await queue.put(ab.create_content_block_stop(0))
+            await queue.put(ab.create_message_delta("end_turn"))
+            await queue.put(ab.create_message_stop())
+            full_text = err_text
     finally:
         # Guarantee conversation history is saved to disk
         try:
-            if chat_id not in _CONVERSATIONS:
-                now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                _CONVERSATIONS[chat_id] = {
-                    "uuid": chat_id,
-                    "name": prompt[:30] if prompt else "Chat",
-                    "created_at": now,
-                    "updated_at": now,
-                    "chat_messages": []
-                }
-            
-            msgs = _CONVERSATIONS[chat_id]["chat_messages"]
-            prev_uuid = msgs[-1]["uuid"] if msgs else None
-            
-            asst_msg = _format_msg("assistant", full_text, len(msgs), prev_uuid)
-            asst_msg["content"] = [
-                {"type": "text", "text": full_text}
-            ]
-            if full_thinking:
-                asst_msg["thinking_process"] = full_thinking
-            msgs.append(asst_msg)
-            _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            _save_history()
+            if full_text.strip():
+                if chat_id not in _CONVERSATIONS:
+                    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    _CONVERSATIONS[chat_id] = {
+                        "uuid": chat_id,
+                        "name": prompt[:30] if prompt else "Chat",
+                        "created_at": now,
+                        "updated_at": now,
+                        "chat_messages": []
+                    }
+                
+                msgs = _CONVERSATIONS[chat_id]["chat_messages"]
+                prev_uuid = msgs[-1]["uuid"] if msgs else None
+                
+                asst_msg = _format_msg("assistant", full_text, len(msgs), prev_uuid)
+                asst_msg["content"] = [
+                    {"type": "text", "text": full_text}
+                ]
+                if full_thinking:
+                    asst_msg["thinking_process"] = full_thinking
+                msgs.append(asst_msg)
+                _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                _save_history()
         except Exception as se:
             logger.error(f"Failed to save conversation history for {chat_id}: {se}")
         
