@@ -11,7 +11,7 @@ from gateway.ignis import router as ignis_router
 from gateway.claude_rest_api import router as claude_rest_router
 
 app = FastAPI(
-    title="Hermes Agent Space Gateway",
+    title="Hermes Agent Space Gateway"  # reload,
     description="OmniRoute + Ignis + Hermes unified gateway.",
     docs_url=None,
     redoc_url=None,
