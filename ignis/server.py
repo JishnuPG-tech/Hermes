@@ -446,5 +446,16 @@ async def alias_del_note(path: str):
 async def alias_graph():
     return await api_get_graph()
 
+@app.get("/api/vaults")
+@app.get("/vault/api/vaults")
+async def api_get_vaults():
+    return [
+        {
+            "name": "Hermes-Vault",
+            "path": str(VAULT_DIR),
+            "noteCount": len(list(VAULT_DIR.rglob("*.md")))
+        }
+    ]
+
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8080)
