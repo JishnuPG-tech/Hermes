@@ -87,6 +87,7 @@ cat > "${HERMES_HOME}/config.yaml" <<EOF
 model:
   provider: omniroute
   default: ${HERMES_MODEL}
+  direct_model_requests: true
 providers:
   omniroute:
     base_url: ${OMNIROUTE_BASE_URL}
