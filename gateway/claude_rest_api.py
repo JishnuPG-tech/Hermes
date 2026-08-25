@@ -1164,13 +1164,18 @@ _SANDBOX_HTML = """<!DOCTYPE html>
             } catch(e) {}
         }
 
-        // Notify Host that iframe is ready for content
+        // Notify Host that sandbox is ready for content via wire format
         function notifyReady() {
-            postToHost({
+            var readyMsg = {
+                channel: "request",
+                requestId: "ready-" + Date.now(),
+                request_id: "ready-" + Date.now(),
                 method: "anthropic.claude.usercontent.sandbox.ReadyForContent",
-                type: "readyForContent",
-                readyForContent: true
-            });
+                payload: {
+                    "@type": "type.googleapis.com/anthropic.claude.usercontent.sandbox.ReadyForContent"
+                }
+            };
+            postToHost(readyMsg);
             postToHost("readyForContent");
         }
 
@@ -1185,7 +1190,7 @@ _SANDBOX_HTML = """<!DOCTYPE html>
                 content = data;
             } else {
                 content = data.content || data.markdown || data.text || data.code || (data.payload && data.payload.content) || '';
-                type = data.artifact_type || data.type || (data.payload && data.payload.type) || '';
+                type = data.artifact_type || data.type || data.mimeType || data.mime_type || (data.payload && (data.payload.type || data.payload.mimeType || data.payload.mime_type)) || '';
             }
 
             if (!content && typeof data === 'object') {
@@ -1196,6 +1201,8 @@ _SANDBOX_HTML = """<!DOCTYPE html>
                     }
                 }
             }
+
+            if (!content) return;
 
             if (type.includes('html') || content.trim().startsWith('<!DOCTYPE html') || content.trim().startsWith('<html')) {
                 root.innerHTML = content;
@@ -1216,22 +1223,53 @@ _SANDBOX_HTML = """<!DOCTYPE html>
             if (typeof d === 'string') {
                 try { d = JSON.parse(d); } catch(e) {}
             }
-            if (d && (d.method === 'anthropic.claude.usercontent.sandbox.SetContent' || d.type === 'SetContent' || d.content)) {
-                renderContent(d.content || d.payload || d);
-            } else {
+            if (!d) return;
+
+            const reqId = d.requestId || d.request_id || d.id;
+            const method = d.method || '';
+
+            // If it's a request from host (SetContent, etc.)
+            if (d.channel === 'request' || method.includes('SetContent') || d.payload || d.content) {
+                const payload = d.payload || d;
+                renderContent(payload);
+
+                // Acknowledge the request to complete Host's Deferred/Promise
+                if (reqId) {
+                    var respMsg = {
+                        channel: "response",
+                        requestId: reqId,
+                        request_id: reqId,
+                        status: 200,
+                        payload: {
+                            "@type": "type.googleapis.com/google.protobuf.Empty"
+                        }
+                    };
+                    postToHost(respMsg);
+                }
+            } else if (d.type === 'SetContent' || d.markdown || d.text) {
                 renderContent(d);
             }
         });
 
-        // Initialize handshake
+        // Initialize handshake on load
         notifyReady();
-        setTimeout(notifyReady, 100);
+        setTimeout(notifyReady, 50);
+        setTimeout(notifyReady, 200);
         setTimeout(notifyReady, 500);
-        setTimeout(notifyReady, 1500);
+        setTimeout(notifyReady, 1200);
+        setTimeout(notifyReady, 2500);
     </script>
 </body>
 </html>"""
 
+@router.get("/mobile/web-view-sandbox-runtime/{runtime_id:path}", response_class=HTMLResponse)
+@router.get("/mobile/web-view-sandbox-runtime", response_class=HTMLResponse)
+@router.get("/mobile/mcp-app-runtime/{runtime_id:path}", response_class=HTMLResponse)
+@router.get("/mobile/mcp-app-runtime", response_class=HTMLResponse)
+@router.get("/hermes/mobile/web-view-sandbox-runtime/{runtime_id:path}", response_class=HTMLResponse)
+@router.get("/hermes/mobile/web-view-sandbox-runtime", response_class=HTMLResponse)
+@router.get("/hermes/mobile/mcp-app-runtime/{runtime_id:path}", response_class=HTMLResponse)
+@router.get("/hermes/mobile/mcp-app-runtime", response_class=HTMLResponse)
 @router.get("/code/frame/{frame_id:path}", response_class=HTMLResponse)
 @router.get("/code/artifact/{artifact_id:path}", response_class=HTMLResponse)
 @router.get("/api/frame/{frame_id:path}", response_class=HTMLResponse)
@@ -1240,7 +1278,7 @@ _SANDBOX_HTML = """<!DOCTYPE html>
 @router.get("/api/frame", response_class=HTMLResponse)
 @router.get("/artifacts/sandbox", response_class=HTMLResponse)
 @router.get("/sandbox", response_class=HTMLResponse)
-async def get_sandbox_frame(frame_id: Optional[str] = None, artifact_id: Optional[str] = None):
+async def get_sandbox_frame(request: Request, frame_id: Optional[str] = None, artifact_id: Optional[str] = None, runtime_id: Optional[str] = None):
     headers = {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
