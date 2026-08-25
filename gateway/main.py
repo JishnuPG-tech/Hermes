@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 
 from gateway.anthropic_bridge import router as anthropic_router
+from gateway.v1_sessions import router as v1_sessions_router
 from gateway.hermes_proxy import router as hermes_proxy_router
 from gateway.omniroute import router as omniroute_router
 from gateway.ignis import router as ignis_router
@@ -47,6 +48,7 @@ async def normalize_hermes_paths(request: Request, call_next):
 
 # Order matters: exact routes BEFORE catch-all proxy
 app.include_router(anthropic_router)
+app.include_router(v1_sessions_router)  # v1 Sessions & Code API - MUST be before hermes_proxy catch-all
 app.include_router(claude_rest_router)
 app.include_router(omniroute_router)
 app.include_router(ignis_router)
