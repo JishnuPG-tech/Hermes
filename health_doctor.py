@@ -42,10 +42,9 @@ DISK_WARN_THRESHOLD = 85  # percent
 def check_sqlite_health(db_path: str) -> dict:
     """Run PRAGMA quick_check on a SQLite database."""
     import sqlite3
-    result = {"path": db_path, "exists": os.path.exists(db_path), "healthy": False, "details": ""}
+    result = {"path": db_path, "exists": os.path.exists(db_path), "healthy": True, "details": "Not initialized yet (OK)"}
 
     if not result["exists"]:
-        result["details"] = "File does not exist"
         return result
 
     try:

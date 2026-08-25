@@ -227,12 +227,16 @@ done
 if [ -d "/ignis" ]; then
     log_info "Starting Ignis Obsidian on 127.0.0.1:8080"
     cd /ignis
-    node server.js > /data/cache/ignis.log 2>&1 &
+    if [ -f "server.py" ]; then
+        python3 server.py > /data/cache/ignis.log 2>&1 &
+    else
+        node server.js > /data/cache/ignis.log 2>&1 &
+    fi
     IGNIS_PID=$!
 
     i=0
     while [ $i -lt 20 ]; do
-        if curl -fsS "http://127.0.0.1:8080/obsidian/health" >/dev/null 2>&1; then
+        if curl -fsS "http://127.0.0.1:8080/obsidian/health" >/dev/null 2>&1 || curl -fsS "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
             log_info "Ignis ready after ${i}s"
             break
         fi
@@ -315,9 +319,14 @@ while true; do
     fi
 
     # Ignis: check if port 8080 responds
-    if ! curl -fsS "http://127.0.0.1:8080/obsidian/health" >/dev/null 2>&1; then
+    if ! curl -fsS "http://127.0.0.1:8080/obsidian/health" >/dev/null 2>&1 && ! curl -fsS "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
         log_error "Ignis down, restarting..."
-        cd /ignis && node server.js > /data/cache/ignis.log 2>&1 &
+        cd /ignis
+        if [ -f "server.py" ]; then
+            python3 server.py > /data/cache/ignis.log 2>&1 &
+        else
+            node server.js > /data/cache/ignis.log 2>&1 &
+        fi
         IGNIS_PID=$!
         sleep 2
     fi
