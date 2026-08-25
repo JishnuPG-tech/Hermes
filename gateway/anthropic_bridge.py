@@ -482,6 +482,27 @@ async def models():
     })
 
 
+@router.get("/hermes/v1/directory/servers")
+async def directory_servers():
+    return JSONResponse({
+        "servers": [{
+            "id": "hermes",
+            "name": "Hermes Agent",
+            "url": "/hermes/v1/messages",
+            "capabilities": [
+                "chat",
+                "completion",
+                "streaming",
+                "artifacts",
+                "thinking",
+                "tools",
+                "embeddings",
+                "files"
+            ]
+        }]
+    })
+
+
 @router.post("/hermes/v1/messages")
 async def messages(request: Request):
     body = await request.json()
