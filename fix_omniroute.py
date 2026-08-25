@@ -100,13 +100,32 @@ def fix_wal_corruption(db_path: str) -> bool:
     lkg_path = os.path.join(BACKUP_DIR, "last-known-good.sqlite")
     if os.path.exists(lkg_path):
         try:
-            shutil.copy2(lkg_path, db_path)
-            log.info(f"Restored from LKG backup: {lkg_path} → {db_path}")
-            return True
+            # Verify LKG is healthy before restoring
+            test_conn = sqlite3.connect(f"file:{lkg_path}?mode=ro", uri=True, timeout=5)
+            row = test_conn.execute("PRAGMA quick_check").fetchone()
+            test_conn.close()
+            if row and row[0] == "ok":
+                shutil.copy2(lkg_path, db_path)
+                log.info(f"Restored from LKG backup: {lkg_path} → {db_path}")
+                return True
         except Exception as e:
-            log.error(f"Failed to restore from LKG: {e}")
+            log.error(f"LKG restore check failed: {e}")
 
-    return False
+    # If unrecoverable, quarantine corrupt DB and start fresh
+    now = datetime.now().strftime("%Y%m%d-%H%M%S")
+    corrupt_quarantine = os.path.join(BACKUP_DIR, f"storage-corrupt-{now}.sqlite")
+    try:
+        shutil.move(db_path, corrupt_quarantine)
+        log.warning(f"Quarantined corrupt DB → {corrupt_quarantine}")
+        # Create fresh SQLite DB
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.close()
+        log.info(f"Initialized fresh DB at {db_path}")
+        return True
+    except Exception as e:
+        log.error(f"Quarantine failed: {e}")
+        return False
 
 
 def sync_active_to_data():

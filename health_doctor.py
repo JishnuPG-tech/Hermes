@@ -114,8 +114,8 @@ def rotate_snapshots():
         except Exception as e:
             log.warning(f"Failed to delete {f}: {e}")
 
-    # Create last-known-good backup if current DB is healthy
-    if os.path.exists(OMNIROUTE_DB):
+    # Create last-known-good backup ONLY if current DB is healthy
+    if os.path.exists(OMNIROUTE_DB) and check_sqlite_health(OMNIROUTE_DB).get("healthy", False):
         lkg_path = os.path.join(DB_BACKUP_DIR, LKG_FILE)
         try:
             shutil.copy2(OMNIROUTE_DB, lkg_path)

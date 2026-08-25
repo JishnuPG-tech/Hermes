@@ -17,6 +17,28 @@ app = FastAPI(
     redoc_url=None,
 )
 
+@app.middleware("http")
+async def normalize_hermes_paths(request: Request, call_next):
+    # 1. Normalize duplicate slashes (e.g. /hermes//api -> /hermes/api)
+    path = request.scope.get("path", "")
+    import re
+    cleaned_path = re.sub(r"/+", "/", path)
+
+    # 2. If request starts with /hermes/api, /hermes/bootstrap, /hermes/account, /hermes/organizations
+    # strip the leading /hermes prefix so it routes to the Claude REST API router
+    # (Do NOT strip /hermes/v1/messages or /hermes/v1/models which belong to anthropic_bridge)
+    if cleaned_path.startswith("/hermes/api/") or cleaned_path == "/hermes/api":
+        cleaned_path = cleaned_path[len("/hermes"):]
+    elif cleaned_path.startswith("/hermes/bootstrap"):
+        cleaned_path = cleaned_path[len("/hermes"):]
+    elif cleaned_path.startswith("/hermes/account"):
+        cleaned_path = cleaned_path[len("/hermes"):]
+    elif cleaned_path.startswith("/hermes/organizations"):
+        cleaned_path = cleaned_path[len("/hermes"):]
+
+    request.scope["path"] = cleaned_path
+    return await call_next(request)
+
 # Order matters: exact routes BEFORE catch-all proxy
 app.include_router(anthropic_router)
 app.include_router(claude_rest_router)
