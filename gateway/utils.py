@@ -1,10 +1,14 @@
 import os
+import asyncio
 
 import httpx
-from fastapi import Request, Response
+import aiohttp
+from fastapi import Request, Response, WebSocket
 from fastapi.responses import StreamingResponse
 
 PUBLIC_HOST = os.getenv("PUBLIC_HOST", "jishnupg-hermes.hf.space")
+
+IGNIS_PORT = int(os.getenv("IGNIS_PORT", "8080"))
 
 _http_client = None
 
@@ -46,7 +50,7 @@ def build_upstream_headers(request: Request, extra_headers=None) -> dict:
     return headers
 
 
-async def proxy_http_request(target_url: str, request: Request, extra_headers=None) -> Response:
+async def proxy_http_request(target_url, request, extra_headers=None, html_fixup=None):
     client = get_http_client()
     headers = build_upstream_headers(request, extra_headers)
     body = await request.body()
@@ -59,10 +63,11 @@ async def proxy_http_request(target_url: str, request: Request, extra_headers=No
     )
     resp = await client.send(req, stream=True)
 
+    content_type = resp.headers.get("content-type", "")
     is_stream = (
-        "text/event-stream" in resp.headers.get("content-type", "")
-        or "video/" in resp.headers.get("content-type", "")
-        or "audio/" in resp.headers.get("content-type", "")
+        "text/event-stream" in content_type
+        or "video/" in content_type
+        or "audio/" in content_type
         or resp.headers.get("transfer-encoding") == "chunked"
     )
 
@@ -83,17 +88,76 @@ async def proxy_http_request(target_url: str, request: Request, extra_headers=No
         streaming = StreamingResponse(
             stream_generator(),
             status_code=resp.status_code,
-            media_type=resp.headers.get("content-type") or None,
+            media_type=content_type or None,
         )
         streaming.raw_headers = raw_headers
         return streaming
 
     content = await resp.aread()
     await resp.aclose()
+
+    if html_fixup and "text/html" in content_type:
+        try:
+            text = content.decode("utf-8", errors="replace")
+            text = html_fixup(text)
+            content = text.encode("utf-8")
+        except Exception:
+            pass
+
     normal = Response(
         content=content,
         status_code=resp.status_code,
-        media_type=resp.headers.get("content-type") or None,
+        media_type=content_type or None,
     )
     normal.raw_headers = raw_headers
     return normal
+
+
+async def proxy_websocket_stream(websocket: WebSocket, target_ws_url: str):
+    await websocket.accept()
+
+    query_string = websocket.scope.get("query_string", b"").decode("utf-8")
+    if query_string:
+        sep = "&" if "?" in target_ws_url else "?"
+        target_ws_url = f"{target_ws_url}{sep}{query_string}"
+
+    skip_headers = {"host", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions"}
+    forward_headers = {k: v for k, v in websocket.headers.items() if k.lower() not in skip_headers}
+    forward_headers["Host"] = PUBLIC_HOST
+    forward_headers["X-Forwarded-Host"] = PUBLIC_HOST
+    forward_headers["X-Forwarded-Proto"] = "https"
+    forward_headers["X-Forwarded-Port"] = "443"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(target_ws_url, headers=forward_headers) as upstream_ws:
+                async def downstream_to_upstream():
+                    async for msg in upstream_ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            await websocket.send_text(msg.data)
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            await websocket.send_bytes(msg.data)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
+                            break
+
+                async def upstream_to_downstream():
+                    while True:
+                        try:
+                            msg = await websocket.receive()
+                            if "text" in msg:
+                                await upstream_ws.send_str(msg["text"])
+                            elif "bytes" in msg:
+                                await upstream_ws.send_bytes(msg["bytes"])
+                            elif msg.get("type") == "websocket.disconnect":
+                                break
+                        except Exception:
+                            break
+
+                await asyncio.gather(downstream_to_upstream(), upstream_to_downstream(), return_exceptions=True)
+    except Exception:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass

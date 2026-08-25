@@ -1,18 +1,19 @@
 # ==============================================================================
 # Anthropic Messages API bridge for the (patched) Claude Android app.
 #
-# The patched app POSTs Anthropic-format requests to /hermes/v1/messages. The
-# upstream (OmniRoute) speaks OpenAI chat/completions and ignores stream:true,
-# returning a single OpenAI JSON blob. This bridge translates:
-#   Anthropic request  -> OpenAI payload  -> upstream
-#   upstream response  -> Anthropic Messages JSON / SSE   (back to the app)
-# Works for both stream=false and stream=true (proper message_start /
-# content_block_delta / message_stop SSE events).
+# The patched app POSTs Anthropic-format requests to /hermes/v1/messages.
+# Upstream = Hermes agent API server (127.0.0.1:8642) which calls OmniRoute.
+# Hermes agent produces rich content: thinking, artifacts, tool calls, text.
+# This bridge translates:
+#   Anthropic request -> OpenAI payload -> Hermes agent
+#   Hermes agent SSE -> Anthropic Messages SSE with rich content blocks
 # ==============================================================================
 
 import json
 import os
 import uuid
+import re
+from typing import AsyncGenerator, Dict, List, Optional, Any
 
 import httpx
 from fastapi import APIRouter, Request
@@ -20,9 +21,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(tags=["AnthropicBridge"])
 
-# Upstream = the Hermes agent API server (localhost inside the container),
-# which itself calls OmniRoute. This gives the app the full agent: persona,
-# memory, skills, tools, and the agentic loop.
 UPSTREAM_URL = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_URL",
     "http://127.0.0.1:8642/v1/chat/completions",
@@ -31,31 +29,55 @@ UPSTREAM_KEY = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_KEY",
     os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")),
 )
-# Model sent upstream. Hermes honors its configured default (auto/best-coding
-# via OmniRoute) unless a model_routes alias matches, so this is informational.
 UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "auto/best-coding")
-# Model name the app requested -> echoed back in Anthropic responses.
-DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-3-2503")
+DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-agent")
 
 
-def anthropic_message(oc: dict, request_model: str) -> dict:
-    text = ""
-    if oc.get("choices"):
-        text = oc["choices"][0].get("message", {}).get("content", "") or ""
-    usage = oc.get("usage", {})
-    return {
-        "id": "msg_" + oc.get("id", str(uuid.uuid4())),
-        "type": "message",
-        "role": "assistant",
-        "model": request_model,
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
-    }
+ARTIFACT_PATTERN = re.compile(
+    r'<antArtifact\s+identifier="([^"]+)"\s+title="([^"]+)"\s+artifactType="([^"]+)">(.*?)</antArtifact>',
+    re.DOTALL
+)
+
+THINKING_PATTERN = re.compile(
+    r'<thinking>(.*?)</thinking>',
+    re.DOTALL
+)
+
+THINKING_SUMMARY_PATTERN = re.compile(
+    r'<thinkingSummary>(.*?)</thinkingSummary>',
+    re.DOTALL
+)
+
+
+def extract_artifacts(text: str) -> List[Dict[str, Any]]:
+    """Extract artifact blocks from text."""
+    artifacts = []
+    for match in ARTIFACT_PATTERN.finditer(text):
+        artifacts.append({
+            "identifier": match.group(1),
+            "title": match.group(2),
+            "artifactType": match.group(3),
+            "content": match.group(4).strip()
+        })
+    return artifacts
+
+
+def extract_thinking(text: str) -> List[str]:
+    """Extract thinking blocks from text."""
+    return [m.group(1).strip() for m in THINKING_PATTERN.finditer(text)]
+
+
+def extract_thinking_summaries(text: str) -> List[str]:
+    """Extract thinking summaries from text."""
+    return [m.group(1).strip() for m in THINKING_SUMMARY_PATTERN.finditer(text)]
+
+
+def remove_special_blocks(text: str) -> str:
+    """Remove artifact, thinking, and thinkingSummary tags from text."""
+    text = ARTIFACT_PATTERN.sub("", text)
+    text = THINKING_PATTERN.sub("", text)
+    text = THINKING_SUMMARY_PATTERN.sub("", text)
+    return text.strip()
 
 
 def messages_to_openai(anthropic_messages: list) -> list:
@@ -73,7 +95,6 @@ def messages_to_openai(anthropic_messages: list) -> list:
 
 
 def system_to_openai(system) -> str:
-    """Flatten the Anthropic `system` field (string or content blocks) to text."""
     if isinstance(system, str):
         return system
     if isinstance(system, list):
@@ -84,11 +105,7 @@ def system_to_openai(system) -> str:
 
 
 async def stream_upstream(payload: dict):
-    """Stream raw SSE data lines from the upstream.
-
-    OmniRoute ignores stream:false and ALWAYS returns text/event-stream, so
-    every call is streamed and parsed as SSE.
-    """
+    """Stream raw SSE data lines from the upstream."""
     async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream(
             "POST",
@@ -109,10 +126,7 @@ async def stream_upstream(payload: dict):
 
 
 async def assemble_upstream(payload: dict) -> tuple:
-    """Consume the upstream SSE stream and assemble full text + usage.
-
-    Returns (text, usage_dict). Used for stream:false clients.
-    """
+    """Consume upstream SSE and assemble full text + usage."""
     text_parts = []
     prompt_tokens = 0
     completion_tokens = 0
@@ -138,69 +152,269 @@ async def assemble_upstream(payload: dict) -> tuple:
     }
 
 
-async def anthropic_sse(request_model: str, payload: dict):
-    id_ = "msg_" + uuid.uuid4().hex
-    started = False
-    text_so_far = ""
+class ContentBlockEmitter:
+    """Manages emission of multiple content blocks in a single message."""
+    
+    def __init__(self, request_model: str):
+        self.request_model = request_model
+        self.message_id = "msg_" + uuid.uuid4().hex
+        self.block_index = 0
+        self.started = False
+        self.blocks_emitted = []  # Track what we've emitted
+    
+    def _next_index(self) -> int:
+        idx = self.block_index
+        self.block_index += 1
+        return idx
+    
+    async def emit_message_start(self) -> str:
+        return (
+            "event: message_start\n"
+            "data: " + json.dumps({
+                "type": "message_start",
+                "message": {
+                    "id": self.message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": self.request_model,
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            }) + "\n\n"
+        )
+    
+    def emit_content_block_start(self, block_type: str, block_data: dict) -> str:
+        idx = self._next_index()
+        self.blocks_emitted.append({"index": idx, "type": block_type})
+        return (
+            f"event: content_block_start\n"
+            f"data: {json.dumps({\n"
+            f'    "type": "content_block_start",\n'
+            f'    "index": {idx},\n'
+            f'    "content_block": {json.dumps(block_data)}\n'
+            f'})}\n\n'
+        )
+    
+    def emit_content_block_delta(self, index: int, delta_type: str, delta_data: dict) -> str:
+        return (
+            f"event: content_block_delta\n"
+            f"data: {json.dumps({\n"
+            f'    "type": "content_block_delta",\n'
+            f'    "index": {index},\n'
+            f'    "delta": {{"type": "{delta_type}", **delta_data}}\n'
+            f'})}\n\n'
+        )
+    
+    def emit_content_block_stop(self, index: int) -> str:
+        return (
+            f"event: content_block_stop\n"
+            f"data: {json.dumps({\"type\": \"content_block_stop\", \"index\": {index}})}\n\n"
+        )
+    
+    def emit_message_delta(self, stop_reason: str = "end_turn") -> str:
+        return (
+            f"event: message_delta\n"
+            f"data: {json.dumps({\n"
+            f'    "type": "message_delta",\n'
+            f'    "delta": {{"stop_reason": "{stop_reason}", "stop_sequence": None}},\n'
+            f'    "usage": {{"input_tokens": 0, "output_tokens": 0}}\n'
+            f'})}\n\n'
+        )
+    
+    def emit_message_stop(self) -> str:
+        return "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n"
+
+
+async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str, None]:
+    """Stream Anthropic SSE with rich content blocks."""
+    emitter = ContentBlockEmitter(request_model)
+    message_started = False
+    
+    # Buffer for accumulating text before we know block type
+    text_buffer = ""
+    current_block_index = None
+    current_block_type = None  # "text", "thinking", "artifact", "tool_use"
+    
+    # Track partial content for multi-chunk blocks
+    accumulated_thinking = ""
+    accumulated_text = ""
+    
     try:
         async for data in stream_upstream(payload):
             data = data.strip()
             if not data or data == "[DONE]":
                 continue
+            
             try:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            delta = (
-                chunk.get("choices", [{}])[0].get("delta", {}) or {}
-            )
+            
+            delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             piece = delta.get("content")
+            tool_calls = delta.get("tool_calls")
+            
+            # Handle tool calls first
+            if tool_calls:
+                # Flush any pending text/thinking block
+                if current_block_index is not None:
+                    yield emitter.emit_content_block_stop(current_block_index)
+                    current_block_index = None
+                    current_block_type = None
+                
+                for tc in tool_calls:
+                    func = tc.get("function", {})
+                    tool_idx = emitter._next_index()
+                    # Tool use start
+                    yield emitter.emit_content_block_start("tool_use", {
+                        "type": "tool_use",
+                        "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
+                        "name": func.get("name", "unknown"),
+                        "input": json.loads(func.get("arguments", "{}"))
+                    })
+                    # Tool use delta (arguments stream in)
+                    if func.get("arguments"):
+                        yield emitter.emit_content_block_delta(tool_idx, "input_json_delta", {
+                            "partial_json": func["arguments"]
+                        })
+                    yield emitter.emit_content_block_stop(tool_idx)
+                continue
+            
             if piece is None:
                 continue
-            if not started:
-                started = True
-                yield (
-                    "event: message_start\n"
-                    "data: " + json.dumps({
-                        "type": "message_start",
-                        "message": {
-                            "id": id_, "type": "message", "role": "assistant",
-                            "model": request_model, "content": [],
-                            "stop_reason": None, "stop_sequence": None,
-                            "usage": {"input_tokens": 0, "output_tokens": 0},
-                        },
-                    }) + "\n\n"
-                )
-                yield (
-                    "event: content_block_start\n"
-                    "data: " + json.dumps({
-                        "type": "content_block_start", "index": 0,
-                        "content_block": {"type": "text", "text": ""},
-                    }) + "\n\n"
-                )
-            text_so_far += piece
-            yield (
-                "event: content_block_delta\n"
-                "data: " + json.dumps({
-                    "type": "content_block_delta", "index": 0,
-                    "delta": {"type": "text_delta", "text": piece},
-                }) + "\n\n"
-            )
+            
+            # First piece - send message_start
+            if not message_started:
+                message_started = True
+                yield await emitter.emit_message_start()
+            
+            # Accumulate and detect special blocks
+            text_buffer += piece
+            
+            # Check for complete artifact blocks
+            artifacts = extract_artifacts(text_buffer)
+            if artifacts:
+                # Flush any pending text before artifact
+                if current_block_type == "text" and current_block_index is not None:
+                    yield emitter.emit_content_block_stop(current_block_index)
+                    current_block_index = None
+                    current_block_type = None
+                
+                for artifact in artifacts:
+                    art_idx = emitter._next_index()
+                    # Emit artifact block
+                    yield emitter.emit_content_block_start("artifact", {
+                        "type": "artifact",
+                        "identifier": artifact["identifier"],
+                        "title": artifact["title"],
+                        "content": artifact["content"],
+                        "artifactType": artifact["artifactType"]
+                    })
+                    yield emitter.emit_content_block_stop(art_idx)
+                
+                # Remove artifacts from buffer
+                text_buffer = remove_special_blocks(text_buffer)
+                continue
+            
+            # Check for thinking blocks
+            thinking_blocks = extract_thinking(text_buffer)
+            if thinking_blocks and current_block_type != "thinking":
+                # Flush pending text
+                if current_block_type == "text" and current_block_index is not None:
+                    yield emitter.emit_content_block_stop(current_block_index)
+                    current_block_index = None
+                
+                # Start thinking block
+                current_block_index = emitter._next_index()
+                current_block_type = "thinking"
+                yield emitter.emit_content_block_start("thinking", {
+                    "type": "thinking",
+                    "thinking": "",
+                    "signature": ""
+                })
+            
+            # Check for thinking summaries
+            thinking_summaries = extract_thinking_summaries(text_buffer)
+            if thinking_summaries:
+                for summary in thinking_summaries:
+                    summ_idx = emitter._next_index()
+                    yield emitter.emit_content_block_start("thinking_summary", {
+                        "type": "thinking_summary",
+                        "summary": summary,
+                        "signature": ""
+                    })
+                    yield emitter.emit_content_block_stop(summ_idx)
+                text_buffer = remove_special_blocks(text_buffer)
+                continue
+            
+            # Emit text/thinking deltas
+            if piece:
+                if current_block_type == "thinking":
+                    accumulated_thinking += piece
+                    yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
+                        "thinking": piece
+                    })
+                else:
+                    # Regular text
+                    if current_block_type != "text":
+                        if current_block_index is not None:
+                            yield emitter.emit_content_block_stop(current_block_index)
+                        current_block_index = emitter._next_index()
+                        current_block_type = "text"
+                        yield emitter.emit_content_block_start("text", {
+                            "type": "text",
+                            "text": ""
+                        })
+                    accumulated_text += piece
+                    yield emitter.emit_content_block_delta(current_block_index, "text_delta", {
+                        "text": piece
+                    })
+        
+        # Handle any remaining text_buffer for artifacts/thinking at end
+        if text_buffer:
+            artifacts = extract_artifacts(text_buffer)
+            for artifact in artifacts:
+                art_idx = emitter._next_index()
+                yield emitter.emit_content_block_start("artifact", {
+                    "type": "artifact",
+                    "identifier": artifact["identifier"],
+                    "title": artifact["title"],
+                    "content": artifact["content"],
+                    "artifactType": artifact["artifactType"]
+                })
+                yield emitter.emit_content_block_stop(art_idx)
+            
+            thinking_blocks = extract_thinking(text_buffer)
+            for thinking in thinking_blocks:
+                think_idx = emitter._next_index()
+                yield emitter.emit_content_block_start("thinking", {
+                    "type": "thinking",
+                    "thinking": thinking,
+                    "signature": ""
+                })
+                yield emitter.emit_content_block_stop(think_idx)
+            
+            thinking_summaries = extract_thinking_summaries(text_buffer)
+            for summary in thinking_summaries:
+                summ_idx = emitter._next_index()
+                yield emitter.emit_content_block_start("thinking_summary", {
+                    "type": "thinking_summary",
+                    "summary": summary,
+                    "signature": ""
+                })
+                yield emitter.emit_content_block_stop(summ_idx)
+    
     finally:
-        if started:
-            yield "event: content_block_stop\ndata: " + json.dumps({
-                "type": "content_block_stop", "index": 0}) + "\n\n"
-            yield "event: message_delta\ndata: " + json.dumps({
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                "usage": {"input_tokens": 0, "output_tokens": len(text_so_far)},
-            }) + "\n\n"
-            yield "event: message_stop\ndata: " + json.dumps({
-                "type": "message_stop"}) + "\n\n"
+        if message_started:
+            if current_block_index is not None:
+                yield emitter.emit_content_block_stop(current_block_index)
+            yield emitter.emit_message_delta("end_turn")
+            yield emitter.emit_message_stop()
 
 
-def build_openai_payload(body: dict) -> dict:
-    """Translate an Anthropic Messages body into an OpenAI chat/completions payload."""
+def build_openai_payload(body: dict) -> tuple:
     model = body.get("model") or DEFAULT_APP_MODEL
     max_tokens = body.get("max_tokens", 4096)
     openai_messages = messages_to_openai(body.get("messages", []))
@@ -223,7 +437,6 @@ def build_openai_payload(body: dict) -> dict:
 
 @router.get("/hermes/v1/models")
 async def models():
-    """Anthropic-compatible model list so the app can discover the backend."""
     return JSONResponse({
         "data": [{"type": "model", "id": UPSTREAM_MODEL}],
         "has_more": False,
@@ -244,7 +457,6 @@ async def messages(request: Request):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    # Upstream always streams SSE; assemble the full response for the client.
     payload["stream"] = True
     text, usage = await assemble_upstream(payload)
     oc = {
@@ -252,4 +464,16 @@ async def messages(request: Request):
         "choices": [{"message": {"content": text}}],
         "usage": usage,
     }
-    return JSONResponse(anthropic_message(oc, app_model))
+    return JSONResponse({
+        "id": "msg_" + oc.get("id", str(uuid.uuid4())),
+        "type": "message",
+        "role": "assistant",
+        "model": app_model,
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        },
+    })
