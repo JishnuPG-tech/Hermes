@@ -885,34 +885,6 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
 # 8. Artifacts & In-Chat Files Endpoints
 _UPLOADED_FILES: Dict[str, Dict[str, Any]] = {}
 
-def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
-    conv = _CONVERSATIONS.get(chat_id, {})
-    artifacts = []
-    seen_ids = set()
-    for msg in conv.get("chat_messages", []):
-        text = msg.get("text", "")
-        for match in re.finditer(r'<antArtifact\s+([^>]+)>([\s\S]*?)</antArtifact>', text):
-            attrs_str = match.group(1)
-            content = match.group(2).strip()
-            attrs = dict(re.findall(r'([a-zA-Z0-9_]+)="([^"]+)"', attrs_str))
-            art_id = attrs.get("identifier") or attrs.get("id") or str(uuid.uuid4())
-            if art_id not in seen_ids:
-                seen_ids.add(art_id)
-                artifacts.append({
-                    "id": art_id,
-                    "uuid": art_id,
-                    "version_uuid": str(uuid.uuid4()),
-                    "identifier": art_id,
-                    "type": attrs.get("type", "application/vnd.ant.markdown"),
-                    "title": attrs.get("title", "Document"),
-                    "language": attrs.get("language", ""),
-                    "content": content,
-                    "is_complete": True,
-                    "created_at": msg.get("created_at"),
-                    "updated_at": msg.get("updated_at")
-                })
-    return artifacts
-
 def _find_artifact_across_all(art_id: str):
     for cid, conv in _CONVERSATIONS.items():
         arts = _extract_artifacts_from_conv(cid)
@@ -1061,18 +1033,12 @@ async def publish_artifact(org_id: str, request: Request, chat_id: Optional[str]
 async def update_artifact_visibility(org_id: str, artifact_id: str, request: Request):
     return {"status": "ok", "artifact_id": artifact_id}
 
-_SANDBOX_HTML = """<!DOCTYPE html>
+_SANDBOX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
     <title>Claude Artifact Sandbox</title>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/json.min.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
     <style>
         :root {
             --bg-color: #1e1e1e;
@@ -1155,28 +1121,67 @@ _SANDBOX_HTML = """<!DOCTYPE html>
     <div id="root">
         <div class="loading">Loading artifact...</div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         function postToHost(msg) {
             try {
-                if (window.parent && window.parent !== window) {
+                if (window.parent) {
                     window.parent.postMessage(msg, '*');
+                }
+            } catch(e) {}
+            try {
+                if (window.top && window.top !== window.parent) {
+                    window.top.postMessage(msg, '*');
                 }
             } catch(e) {}
         }
 
         // Notify Host that sandbox is ready for content via wire format
         function notifyReady() {
+            var reqId = "ready-" + Date.now();
             var readyMsg = {
                 channel: "request",
-                requestId: "ready-" + Date.now(),
-                request_id: "ready-" + Date.now(),
+                requestId: reqId,
+                request_id: reqId,
                 method: "anthropic.claude.usercontent.sandbox.ReadyForContent",
                 payload: {
                     "@type": "type.googleapis.com/anthropic.claude.usercontent.sandbox.ReadyForContent"
                 }
             };
             postToHost(readyMsg);
+            postToHost({
+                channel: "request",
+                requestId: reqId,
+                request_id: reqId,
+                method: "ReadyForContent"
+            });
             postToHost("readyForContent");
+        }
+
+        function basicMarkdown(src) {
+            if (!src) return '';
+            // Basic fallback markdown parser
+            let out = src
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            
+            // Fenced code blocks
+            out = out.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, function(m, lang, code) {
+                return '<pre><code>' + code + '</code></pre>';
+            });
+            // Inline code
+            out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Headings
+            out = out.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            out = out.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            out = out.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+            // Bold and Italic
+            out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            // Paragraphs
+            out = out.replace(/\n\n+/g, '<br><br>');
+            return out;
         }
 
         function renderContent(data) {
@@ -1204,16 +1209,20 @@ _SANDBOX_HTML = """<!DOCTYPE html>
 
             if (!content) return;
 
-            if (type.includes('html') || content.trim().startsWith('<!DOCTYPE html') || content.trim().startsWith('<html')) {
-                root.innerHTML = content;
-            } else if (type.includes('svg') || content.trim().startsWith('<svg')) {
-                root.innerHTML = content;
-            } else {
-                if (window.marked) {
-                    root.innerHTML = marked.parse(content);
+            try {
+                if (type.includes('html') || content.trim().startsWith('<!DOCTYPE html') || content.trim().startsWith('<html')) {
+                    root.innerHTML = content;
+                } else if (type.includes('svg') || content.trim().startsWith('<svg')) {
+                    root.innerHTML = content;
                 } else {
-                    root.innerText = content;
+                    if (window.marked && typeof window.marked.parse === 'function') {
+                        root.innerHTML = marked.parse(content);
+                    } else {
+                        root.innerHTML = basicMarkdown(content);
+                    }
                 }
+            } catch(e) {
+                root.innerHTML = '<pre>' + content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
             }
         }
 
@@ -1223,7 +1232,7 @@ _SANDBOX_HTML = """<!DOCTYPE html>
             if (typeof d === 'string') {
                 try { d = JSON.parse(d); } catch(e) {}
             }
-            if (!d) return;
+            if (!d || typeof d !== 'object') return;
 
             const reqId = d.requestId || d.request_id || d.id;
             const method = d.method || '';
@@ -1245,6 +1254,13 @@ _SANDBOX_HTML = """<!DOCTYPE html>
                         }
                     };
                     postToHost(respMsg);
+                    // Also post without payload as additional safeguard
+                    postToHost({
+                        channel: "response",
+                        requestId: reqId,
+                        request_id: reqId,
+                        status: 200
+                    });
                 }
             } else if (d.type === 'SetContent' || d.markdown || d.text) {
                 renderContent(d);
@@ -1256,8 +1272,9 @@ _SANDBOX_HTML = """<!DOCTYPE html>
         setTimeout(notifyReady, 50);
         setTimeout(notifyReady, 200);
         setTimeout(notifyReady, 500);
-        setTimeout(notifyReady, 1200);
-        setTimeout(notifyReady, 2500);
+        setTimeout(notifyReady, 1000);
+        setTimeout(notifyReady, 2000);
+        setTimeout(notifyReady, 4000);
     </script>
 </body>
 </html>"""
