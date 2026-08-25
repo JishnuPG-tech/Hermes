@@ -485,6 +485,13 @@ async def memory_settings(org_id: str):
 async def register_notification_channel(org_id: str, request: Request):
     return {"status": "registered"}
 
+@router.get("/api/organizations/{org_id}/projects_v2")
+@router.get("/organizations/{org_id}/projects_v2")
+@router.get("/hermes/api/organizations/{org_id}/projects_v2")
+@router.get("/hermes/organizations/{org_id}/projects_v2")
+async def list_projects_v2(org_id: str):
+    return []
+
 # 6. Chat Conversations Management
 @router.get("/api/organizations/{org_id}/chat_conversations")
 @router.get("/organizations/{org_id}/chat_conversations")
