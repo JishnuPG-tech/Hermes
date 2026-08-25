@@ -14,6 +14,8 @@ API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 OMNIROUTE_ACTIVE="/root/.omniroute"
 OMNIROUTE_DATA="/data/omniroute"
+# Skip internal OmniRoute (use external) - saves resources and avoids rate limits
+SKIP_INTERNAL_OMNIROUTE="${SKIP_INTERNAL_OMNIROUTE:-true}"
 
 export OMNIROUTE_BASE_URL OMNIROUTE_API_KEY API_SERVER_KEY HERMES_INTERNAL_PORT
 
@@ -190,38 +192,44 @@ while [ $i -lt 90 ]; do
 done
 
 # ── Start OmniRoute :20128 (unified dashboard + API) ────────────
-# Turbopack standalone build: dashboard + API on single port.
-# Live WebSocket on :20132, Embed WebSocket on :20131.
-log_info "Starting OmniRoute AI Gateway on 127.0.0.1:20128"
-export PORT=20128
-export HOSTNAME="127.0.0.1"
-export DATA_DIR="${OMNIROUTE_ACTIVE}"
-export CLI_COMPAT_CLAUDE=1
-export CLI_COMPAT_ANTIGRAVITY=1
-export CLI_COMPAT_GITHUB=1
-export OMNIROUTE_REQUIRE_API_KEY=false
-export OMNIROUTE_ALLOW_UNAUTHENTICATED=true
-export INITIAL_PASSWORD="${OMNIROUTE_API_KEY}"
-export ENCRYPTION_KEY="${ENCRYPTION_KEY}"
-export JWT_SECRET="${JWT_SECRET}"
-
-cd /omniroute
-if [ -f "server.js" ]; then
-    node server.js > /data/cache/omniroute.log 2>&1 &
+# Skip internal OmniRoute if SKIP_INTERNAL_OMNIROUTE=true (use external instead)
+if [ "$SKIP_INTERNAL_OMNIROUTE" = "true" ]; then
+    log_info "Skipping internal OmniRoute (using external: ${OMNIROUTE_BASE_URL})"
+    OMNIROUTE_PID=""
 else
-    npm run start > /data/cache/omniroute.log 2>&1 &
-fi
-OMNIROUTE_PID=$!
+    # Turbopack standalone build: dashboard + API on single port.
+    # Live WebSocket on :20132, Embed WebSocket on :20131.
+    log_info "Starting OmniRoute AI Gateway on 127.0.0.1:20128"
+    export PORT=20128
+    export HOSTNAME="127.0.0.1"
+    export DATA_DIR="${OMNIROUTE_ACTIVE}"
+    export CLI_COMPAT_CLAUDE=1
+    export CLI_COMPAT_ANTIGRAVITY=1
+    export CLI_COMPAT_GITHUB=1
+    export OMNIROUTE_REQUIRE_API_KEY=false
+    export OMNIROUTE_ALLOW_UNAUTHENTICATED=true
+    export INITIAL_PASSWORD="${OMNIROUTE_API_KEY}"
+    export ENCRYPTION_KEY="${ENCRYPTION_KEY}"
+    export JWT_SECRET="${JWT_SECRET}"
 
-i=0
-while [ $i -lt 60 ]; do
-    if curl -fsS "http://127.0.0.1:20128/api/monitoring/health" >/dev/null 2>&1; then
-        log_info "OmniRoute ready after ${i}s"
-        break
+    cd /omniroute
+    if [ -f "server.js" ]; then
+        node server.js > /data/cache/omniroute.log 2>&1 &
+    else
+        npm run start > /data/cache/omniroute.log 2>&1 &
     fi
-    i=$((i + 1))
-    sleep 1
-done
+    OMNIROUTE_PID=$!
+
+    i=0
+    while [ $i -lt 60 ]; do
+        if curl -fsS "http://127.0.0.1:20128/api/monitoring/health" >/dev/null 2>&1; then
+            log_info "OmniRoute ready after ${i}s"
+            break
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+fi
 
 # ── Start Ignis (Obsidian) :8080 ───────────────────────────────
 if [ -d "/ignis" ]; then
@@ -264,7 +272,9 @@ cleanup() {
     kill $FASTAPI_PID 2>/dev/null || true
     kill $NGINX_PID 2>/dev/null || true
     kill $IGNIS_PID 2>/dev/null || true
-    kill $OMNIROUTE_PID 2>/dev/null || true
+    if [ -n "$OMNIROUTE_PID" ]; then
+        kill $OMNIROUTE_PID 2>/dev/null || true
+    fi
     kill $HERMES_PID 2>/dev/null || true
     kill $REDIS_PID 2>/dev/null || true
 
@@ -310,12 +320,14 @@ while true; do
         sleep 2
     fi
 
-    # OmniRoute: check if port 20128 responds
-    if ! curl -fsS "http://127.0.0.1:20128/api/monitoring/health" >/dev/null 2>&1; then
-        log_error "OmniRoute down, restarting..."
-        cd /omniroute && node server.js > /data/cache/omniroute.log 2>&1 &
-        OMNIROUTE_PID=$!
-        sleep 2
+    # OmniRoute: check if port 20128 responds (only if not skipped)
+    if [ "$SKIP_INTERNAL_OMNIROUTE" != "true" ]; then
+        if ! curl -fsS "http://127.0.0.1:20128/api/monitoring/health" >/dev/null 2>&1; then
+            log_error "OmniRoute down, restarting..."
+            cd /omniroute && node server.js > /data/cache/omniroute.log 2>&1 &
+            OMNIROUTE_PID=$!
+            sleep 2
+        fi
     fi
 
     # Ignis: check if port 8080 responds
