@@ -76,3 +76,4 @@ EXPOSE 7860
 
 ENTRYPOINT ["/entrypoint.sh"]
 # Force rebuild 08/25/2026 15:18:45
+# Rebuild 08/25/2026 15:51:27
