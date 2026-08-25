@@ -168,60 +168,50 @@ class ContentBlockEmitter:
         return idx
     
     async def emit_message_start(self) -> str:
-        return (
-            "event: message_start\n"
-            "data: " + json.dumps({
-                "type": "message_start",
-                "message": {
-                    "id": self.message_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "model": self.request_model,
-                    "content": [],
-                    "stop_reason": None,
-                    "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                },
-            }) + "\n\n"
-        )
+        msg = {
+            "type": "message_start",
+            "message": {
+                "id": self.message_id,
+                "type": "message",
+                "role": "assistant",
+                "model": self.request_model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        }
+        return "event: message_start\ndata: " + json.dumps(msg) + "\n\n"
     
     def emit_content_block_start(self, block_type: str, block_data: dict) -> str:
         idx = self._next_index()
         self.blocks_emitted.append({"index": idx, "type": block_type})
-        return (
-            f"event: content_block_start\n"
-            f"data: {json.dumps({\n"
-            f'    "type": "content_block_start",\n'
-            f'    "index": {idx},\n'
-            f'    "content_block": {json.dumps(block_data)}\n'
-            f'})}\n\n'
-        )
+        inner = {
+            "type": "content_block_start",
+            "index": idx,
+            "content_block": block_data,
+        }
+        return "event: content_block_start\ndata: " + json.dumps(inner) + "\n\n"
     
     def emit_content_block_delta(self, index: int, delta_type: str, delta_data: dict) -> str:
-        return (
-            f"event: content_block_delta\n"
-            f"data: {json.dumps({\n"
-            f'    "type": "content_block_delta",\n'
-            f'    "index": {index},\n'
-            f'    "delta": {{"type": "{delta_type}", **delta_data}}\n'
-            f'})}\n\n'
-        )
+        inner = {
+            "type": "content_block_delta",
+            "index": index,
+            "delta": {"type": delta_type, **delta_data},
+        }
+        return "event: content_block_delta\ndata: " + json.dumps(inner) + "\n\n"
     
     def emit_content_block_stop(self, index: int) -> str:
-        return (
-            f"event: content_block_stop\n"
-            f"data: {json.dumps({\"type\": \"content_block_stop\", \"index\": {index}})}\n\n"
-        )
+        inner = {"type": "content_block_stop", "index": index}
+        return "event: content_block_stop\ndata: " + json.dumps(inner) + "\n\n"
     
     def emit_message_delta(self, stop_reason: str = "end_turn") -> str:
-        return (
-            f"event: message_delta\n"
-            f"data: {json.dumps({\n"
-            f'    "type": "message_delta",\n'
-            f'    "delta": {{"stop_reason": "{stop_reason}", "stop_sequence": None}},\n'
-            f'    "usage": {{"input_tokens": 0, "output_tokens": 0}}\n'
-            f'})}\n\n'
-        )
+        inner = {
+            "type": "message_delta",
+            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+        return "event: message_delta\ndata: " + json.dumps(inner) + "\n\n"
     
     def emit_message_stop(self) -> str:
         return "event: message_stop\ndata: " + json.dumps({"type": "message_stop"}) + "\n\n"
