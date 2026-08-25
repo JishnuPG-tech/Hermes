@@ -21,10 +21,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(tags=["AnthropicBridge"])
 
-UPSTREAM_URL = os.getenv(
+raw_upstream = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_URL",
-    "http://127.0.0.1:8642/v1/chat/completions",
+    os.getenv("OMNIROUTE_BASE_URL", "https://jishnupg-opencode-cli.hf.space/v1/chat/completions")
 )
+if not raw_upstream.endswith("/chat/completions"):
+    UPSTREAM_URL = raw_upstream.rstrip("/") + ("/chat/completions" if "/v1" in raw_upstream else "/v1/chat/completions")
+else:
+    UPSTREAM_URL = raw_upstream
+
 UPSTREAM_KEY = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_KEY",
     os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")),
@@ -104,25 +109,45 @@ def system_to_openai(system) -> str:
     return str(system or "")
 
 
+FALLBACK_URLS = [
+    UPSTREAM_URL,
+    "https://jishnupg-opencode-cli.hf.space/v1/chat/completions",
+    "http://127.0.0.1:20128/v1/chat/completions",
+]
+
 async def stream_upstream(payload: dict):
-    """Stream raw SSE data lines from the upstream."""
-    async with httpx.AsyncClient(timeout=300) as client:
-        async with client.stream(
-            "POST",
-            UPSTREAM_URL,
-            headers={
-                "Authorization": f"Bearer {UPSTREAM_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        ) as r:
-            r.raise_for_status()
-            async for line in r.aiter_lines():
-                line = line.strip()
-                if line.startswith("data: "):
-                    yield line[6:]
-                elif line == "data: [DONE]":
-                    yield "[DONE]"
+    """Stream raw SSE data lines from upstream with automatic fallback."""
+    last_err = None
+    urls_to_try = list(dict.fromkeys(FALLBACK_URLS))
+
+    for url in urls_to_try:
+        try:
+            async with httpx.AsyncClient(timeout=300) as client:
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {UPSTREAM_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as r:
+                    if r.status_code == 200:
+                        async for line in r.aiter_lines():
+                            line = line.strip()
+                            if line.startswith("data: "):
+                                yield line[6:]
+                            elif line == "data: [DONE]":
+                                yield "[DONE]"
+                        return
+                    else:
+                        last_err = f"HTTP {r.status_code} from {url}"
+        except Exception as e:
+            last_err = f"{url}: {e}"
+            continue
+
+    if last_err:
+        raise RuntimeError(f"All upstream endpoints failed. Last error: {last_err}")
 
 
 async def assemble_upstream(payload: dict) -> tuple:
