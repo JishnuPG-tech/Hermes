@@ -52,11 +52,47 @@ def _format_msg(sender: str, text: str, idx: int, prev_uuid: Optional[str] = Non
         "parent_message_uuid": prev_uuid
     }
 
+def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
+    conv = _CONVERSATIONS.get(chat_id, {})
+    artifacts = []
+    seen_ids = set()
+    for msg in conv.get("chat_messages", []):
+        full_body = msg.get("text", "")
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for cb in content:
+                if isinstance(cb, dict) and cb.get("type") == "text":
+                    full_body += "\n" + cb.get("text", "")
+        
+        for match in re.finditer(r'<antArtifact\s+([^>]+)>([\s\S]*?)(?:</antArtifact>|$)', full_body):
+            attrs_str = match.group(1)
+            content_str = match.group(2).strip()
+            attrs = dict(re.findall(r'([a-zA-Z0-9_]+)="([^"]+)"', attrs_str))
+            art_id = attrs.get("identifier") or attrs.get("id") or str(uuid.uuid4())
+            if art_id not in seen_ids:
+                seen_ids.add(art_id)
+                artifacts.append({
+                    "id": art_id,
+                    "uuid": art_id,
+                    "version_uuid": str(uuid.uuid4()),
+                    "identifier": art_id,
+                    "type": attrs.get("type", "application/vnd.ant.markdown"),
+                    "title": attrs.get("title", "Document"),
+                    "language": attrs.get("language", ""),
+                    "content": content_str,
+                    "is_complete": True,
+                    "created_at": msg.get("created_at"),
+                    "updated_at": msg.get("updated_at")
+                })
+    return artifacts
+
 def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
     msgs = conv.get("chat_messages", [])
     leaf_uuid = msgs[-1]["uuid"] if msgs else None
+    chat_id = conv.get("uuid")
+    artifacts = _extract_artifacts_from_conv(chat_id)
     return {
-        "uuid": conv.get("uuid"),
+        "uuid": chat_id,
         "name": conv.get("name", "Chat"),
         "summary": conv.get("name", "Chat"),
         "created_at": conv.get("created_at"),
@@ -67,7 +103,8 @@ def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
         },
         "is_starred": conv.get("is_starred", False),
         "current_leaf_message_uuid": leaf_uuid,
-        "chat_messages": msgs
+        "chat_messages": msgs,
+        "artifacts": artifacts
     }
 
 # 1. Models Catalog (Full ModelOption array matching Organization.claude_ai_bootstrap_models_config)
@@ -375,6 +412,9 @@ async def app_start_response(org_id: Optional[str] = None):
         "model_selector_state": MODEL_SELECTOR_STATE_LIST,
         "org_growthbook": {
             "features": {
+                "artifacts": {"defaultValue": True},
+                "artifacts_v2": {"defaultValue": True},
+                "artifacts_editor": {"defaultValue": True},
                 "model_selector_enabled": {"defaultValue": True},
                 "pro_enabled": {"defaultValue": True},
                 "premium_enabled": {"defaultValue": True},
@@ -384,6 +424,9 @@ async def app_start_response(org_id: Optional[str] = None):
         "server_localizations": {},
         "current_user_access": {
             "features": [
+                {"feature": "artifacts", "status": "available"},
+                {"feature": "artifacts_v2", "status": "available"},
+                {"feature": "artifacts_editor", "status": "available"},
                 {"feature": "web_search", "status": "available"},
                 {"feature": "saffron", "status": "available"},
                 {"feature": "wiggle", "status": "available"},
@@ -398,6 +441,7 @@ async def app_start_response(org_id: Optional[str] = None):
                 {"feature": "third_party_analytics", "status": "available"}
             ],
             "account_features": [
+                {"feature": "artifacts", "status": "available"},
                 {"feature": "web_search", "status": "available"},
                 {"feature": "chat", "status": "available"},
                 {"feature": "claude_code_web", "status": "available"}
@@ -405,8 +449,10 @@ async def app_start_response(org_id: Optional[str] = None):
         },
         "personalized_greeting": [],
         "statsig": {"flags": {}, "experiments": {}},
-        "active_flags": ["claude_3_5_sonnet", "claude_3_opus", "artifacts", "memory", "latex", "model_selector_enabled", "pro_enabled", "premium_enabled"],
+        "active_flags": ["claude_3_5_sonnet", "claude_3_opus", "artifacts", "artifacts_v2", "memory", "latex", "model_selector_enabled", "pro_enabled", "premium_enabled"],
         "flags": {
+            "artifacts": True,
+            "artifacts_v2": True,
             "model_selector_enabled": True,
             "pro_enabled": True,
             "premium_enabled": True,
@@ -625,7 +671,21 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
     try:
         await queue.put(ab.create_message_start(msg_id, model))
 
-        system_instruction = "You are Hermes, an intelligent and helpful AI assistant. Answer the user's query clearly and directly."
+        system_instruction = (
+            "You are Hermes, an intelligent and helpful AI assistant with live interactive Artifact support.\n\n"
+            "# Artifacts Guidelines:\n"
+            "When asked to generate complete, substantial, or self-contained content such as documents, markdown files, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag so it renders as an interactive artifact card in the application:\n"
+            "<antArtifact identifier=\"unique-id\" type=\"application/vnd.ant.markdown\" title=\"Title\">\n"
+            "... content ...\n"
+            "</antArtifact>\n\n"
+            "Supported artifact types:\n"
+            "- `application/vnd.ant.markdown`: For Markdown (.md) documents, articles, summaries, guides, notes.\n"
+            "- `text/html`: For complete HTML/CSS/JavaScript web pages and interactive UI applications (.html).\n"
+            "- `image/svg+xml`: For standalone vector graphics and diagrams (.svg).\n"
+            "- `application/vnd.ant.code` (with `language=\"python\" | \"javascript\" | \"json\" | ...`): For standalone source code files.\n"
+            "- `application/vnd.ant.mermaid`: For mermaid flowcharts and diagrams.\n\n"
+            "Place your conversational greeting or summary outside the `<antArtifact>` tag, and put the full document or code content inside the `<antArtifact>` tag."
+        )
         openai_messages = [{"role": "system", "content": system_instruction}]
 
         for m in messages:
