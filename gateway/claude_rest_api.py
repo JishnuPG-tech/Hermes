@@ -667,34 +667,17 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
                 continue
 
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
-            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
             text_delta = delta.get("content", "")
 
-            if reasoning_delta and not text_active:
-                if not thinking_active:
-                    await queue.put(ab.create_thinking_block_start(0))
-                    thinking_active = True
-                full_thinking += reasoning_delta
-                await queue.put(ab.create_thinking_block_delta(reasoning_delta, 0))
-
             if text_delta:
-                if thinking_active:
-                    await queue.put(ab.create_thinking_block_stop(0))
-                    thinking_active = False
                 if not text_active:
-                    text_idx = 1 if full_thinking else 0
-                    await queue.put(ab.create_content_block_start(text_idx))
+                    await queue.put(ab.create_content_block_start(0))
                     text_active = True
-                text_idx = 1 if full_thinking else 0
                 full_text += text_delta
-                await queue.put(ab.create_content_block_delta(text_delta, text_idx))
+                await queue.put(ab.create_content_block_delta(text_delta, 0))
 
-        if thinking_active:
-            await queue.put(ab.create_thinking_block_stop(0))
-        
         if text_active:
-            text_idx = 1 if full_thinking else 0
-            await queue.put(ab.create_content_block_stop(text_idx))
+            await queue.put(ab.create_content_block_stop(0))
         else:
             await queue.put(ab.create_content_block_start(0))
             await queue.put(ab.create_content_block_stop(0))
@@ -703,9 +686,8 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
         await queue.put(ab.create_message_stop())
     except Exception as e:
         logger.error(f"Error in background agent execution for {chat_id}: {e}")
-        # Emit friendly fallback error if stream failed
         if not text_active and not full_text:
-            err_text = "I'm here and ready to help. Could you please rephrase or try again?"
+            err_text = "I'm here and ready to help. How can I assist you?"
             await queue.put(ab.create_content_block_start(0))
             await queue.put(ab.create_content_block_delta(err_text, 0))
             await queue.put(ab.create_content_block_stop(0))
@@ -733,8 +715,6 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
                 asst_msg["content"] = [
                     {"type": "text", "text": full_text}
                 ]
-                if full_thinking:
-                    asst_msg["thinking_process"] = full_thinking
                 msgs.append(asst_msg)
                 _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 _save_history()
