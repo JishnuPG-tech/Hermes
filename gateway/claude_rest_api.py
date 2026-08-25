@@ -1127,3 +1127,4 @@ async def feature_flags(org_id: str):
             "model_selector_enabled": True
         }
     }
+# Model selector config fix 08/25/2026 15:48:46
