@@ -10,7 +10,6 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from gateway import anthropic_bridge as ab
-from hermes_core.agent import agent
 
 logger = logging.getLogger("claude_rest_api")
 router = APIRouter()
@@ -619,33 +618,39 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
     try:
         await queue.put(ab.create_message_start(msg_id, model))
 
-        async for chunk in agent.stream_chat(messages, model=model):
-            ctype = chunk.get("type")
-            if ctype == "thinking":
-                delta = chunk.get("content", "")
-                if delta and not text_active:
-                    if not thinking_active:
-                        await queue.put(ab.create_thinking_block_start(0))
-                        thinking_active = True
-                    full_thinking += delta
-                    await queue.put(ab.create_thinking_block_delta(delta, 0))
-            elif ctype == "text":
-                delta = chunk.get("content", "")
-                if delta:
-                    if thinking_active:
-                        await queue.put(ab.create_thinking_block_stop(0))
-                        thinking_active = False
-                    if not text_active:
-                        # Start text block on index 1 if thinking was present, else index 0
-                        text_idx = 1 if full_thinking else 0
-                        await queue.put(ab.create_content_block_start(text_idx))
-                        text_active = True
-                    text_idx = 1 if full_thinking else 0
-                    full_text += delta
-                    await queue.put(ab.create_content_block_delta(delta, text_idx))
-            elif ctype == "error":
-                err = chunk.get("error", "")
-                err_msg = f"\n\n[Error: {err}]"
+        openai_messages = []
+        for m in messages:
+            role = m.get("role") or m.get("sender") or "user"
+            content = m.get("text") or (m.get("content", [{}])[0].get("text", "") if isinstance(m.get("content"), list) and m.get("content") else "")
+            openai_messages.append({"role": role, "content": content})
+
+        payload = {
+            "model": "auto/best-coding",
+            "messages": openai_messages,
+            "stream": True,
+        }
+
+        async for data in ab.stream_upstream(payload):
+            data = data.strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                chunk = json.loads(data)
+            except Exception:
+                continue
+
+            delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+            reasoning_delta = delta.get("reasoning_content") or delta.get("reasoning")
+            text_delta = delta.get("content", "")
+
+            if reasoning_delta and not text_active:
+                if not thinking_active:
+                    await queue.put(ab.create_thinking_block_start(0))
+                    thinking_active = True
+                full_thinking += reasoning_delta
+                await queue.put(ab.create_thinking_block_delta(reasoning_delta, 0))
+
+            if text_delta:
                 if thinking_active:
                     await queue.put(ab.create_thinking_block_stop(0))
                     thinking_active = False
@@ -654,8 +659,8 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
                     await queue.put(ab.create_content_block_start(text_idx))
                     text_active = True
                 text_idx = 1 if full_thinking else 0
-                full_text += err_msg
-                await queue.put(ab.create_content_block_delta(err_msg, text_idx))
+                full_text += text_delta
+                await queue.put(ab.create_content_block_delta(text_delta, text_idx))
 
         if thinking_active:
             await queue.put(ab.create_thinking_block_stop(0))
