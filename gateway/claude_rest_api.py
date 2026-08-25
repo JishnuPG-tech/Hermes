@@ -1136,17 +1136,17 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             } catch(e) {}
         }
 
+        var contentReceived = false;
+
         // Notify Host that sandbox is ready for content via wire format
         function notifyReady() {
+            if (contentReceived) return;
             var reqId = "ready-" + Date.now();
             var readyMsg = {
                 channel: "request",
                 requestId: reqId,
                 request_id: reqId,
-                method: "anthropic.claude.usercontent.sandbox.ReadyForContent",
-                payload: {
-                    "@type": "type.googleapis.com/anthropic.claude.usercontent.sandbox.ReadyForContent"
-                }
+                method: "anthropic.claude.usercontent.sandbox.ReadyForContent"
             };
             postToHost(readyMsg);
             postToHost({
@@ -1185,6 +1185,7 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
         }
 
         function renderContent(data) {
+            contentReceived = true;
             const root = document.getElementById('root');
             if (!data) return;
             
@@ -1248,33 +1249,25 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
                         channel: "response",
                         requestId: reqId,
                         request_id: reqId,
-                        status: 200,
-                        payload: {
-                            "@type": "type.googleapis.com/google.protobuf.Empty"
-                        }
+                        status: 200
                     };
                     postToHost(respMsg);
-                    // Also post without payload as additional safeguard
-                    postToHost({
-                        channel: "response",
-                        requestId: reqId,
-                        request_id: reqId,
-                        status: 200
-                    });
                 }
             } else if (d.type === 'SetContent' || d.markdown || d.text) {
                 renderContent(d);
             }
         });
 
-        // Initialize handshake on load
+        // Initialize handshake with aggressive intervals until content is received
         notifyReady();
-        setTimeout(notifyReady, 50);
-        setTimeout(notifyReady, 200);
-        setTimeout(notifyReady, 500);
-        setTimeout(notifyReady, 1000);
-        setTimeout(notifyReady, 2000);
-        setTimeout(notifyReady, 4000);
+        var readyTimer = setInterval(function() {
+            if (contentReceived) {
+                clearInterval(readyTimer);
+            } else {
+                notifyReady();
+            }
+        }, 200);
+        setTimeout(function() { clearInterval(readyTimer); }, 15000);
     </script>
 </body>
 </html>"""
