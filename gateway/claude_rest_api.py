@@ -1292,7 +1292,12 @@ async def get_sandbox_frame(request: Request, frame_id: Optional[str] = None, ar
     headers = {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
-        "Content-Security-Policy": "frame-ancestors *"
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Content-Security-Policy": "frame-ancestors *",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0"
     }
     return HTMLResponse(content=_SANDBOX_HTML, headers=headers)
 
