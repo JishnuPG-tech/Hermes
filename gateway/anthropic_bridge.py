@@ -244,7 +244,38 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
             
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             piece = delta.get("content")
+            reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
+            
+            # Handle upstream reasoning_content as ThinkingBlock / ThinkingDelta
+            if reasoning_piece:
+                if not message_started:
+                    message_started = True
+                    yield await emitter.emit_message_start()
+                
+                if current_block_type != "thinking":
+                    if current_block_type == "text" and current_block_index is not None:
+                        yield emitter.emit_content_block_stop(current_block_index)
+                    current_block_index = emitter._next_index()
+                    current_block_type = "thinking"
+                    yield emitter.emit_content_block_start("thinking", {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": ""
+                    })
+                
+                accumulated_thinking += reasoning_piece
+                yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
+                    "thinking": reasoning_piece
+                })
+                continue
+            
+            # If we were in thinking mode and now regular content arrives, close thinking block
+            if piece and current_block_type == "thinking":
+                if current_block_index is not None:
+                    yield emitter.emit_content_block_stop(current_block_index)
+                current_block_index = None
+                current_block_type = None
             
             # Handle tool calls first
             if tool_calls:
