@@ -272,8 +272,27 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
             reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
             
-            # Skip internal reasoning deltas to avoid persistent Thought process pill in mobile client
-            if reasoning_piece and not piece:
+            # Handle reasoning_content as ThinkingDelta (live thinking streaming)
+            if reasoning_piece:
+                if not message_started:
+                    message_started = True
+                    yield await emitter.emit_message_start()
+                
+                if current_block_type != "thinking":
+                    if current_block_type == "text" and current_block_index is not None:
+                        yield emitter.emit_content_block_stop(current_block_index)
+                    current_block_index = emitter._next_index()
+                    current_block_type = "thinking"
+                    yield emitter.emit_content_block_start("thinking", {
+                        "type": "thinking",
+                        "thinking": "",
+                        "signature": ""
+                    })
+                
+                accumulated_thinking += reasoning_piece
+                yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
+                    "thinking": reasoning_piece
+                })
                 continue
             
             # Handle tool calls first
