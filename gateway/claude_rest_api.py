@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Request, Header, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from gateway import anthropic_bridge as ab
 
 logger = logging.getLogger("claude_rest_api")
@@ -1060,6 +1060,193 @@ async def publish_artifact(org_id: str, request: Request, chat_id: Optional[str]
 @router.put("/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
 async def update_artifact_visibility(org_id: str, artifact_id: str, request: Request):
     return {"status": "ok", "artifact_id": artifact_id}
+
+_SANDBOX_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Claude Artifact Sandbox</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/json.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+    <style>
+        :root {
+            --bg-color: #1e1e1e;
+            --text-color: #e3e3e3;
+            --link-color: #72a7fe;
+            --border-color: #333;
+            --code-bg: #2d2d2d;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-color: #ffffff;
+                --text-color: #1f2328;
+                --link-color: #0969da;
+                --border-color: #d0d7de;
+                --code-bg: #f6f8fa;
+            }
+        }
+        html, body {
+            margin: 0;
+            padding: 16px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            font-size: 15px;
+            box-sizing: border-box;
+            overflow-x: hidden;
+            word-wrap: break-word;
+        }
+        pre {
+            background-color: var(--code-bg);
+            border-radius: 8px;
+            padding: 14px;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+        }
+        code {
+            font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+            font-size: 13.5px;
+        }
+        p code, li code {
+            background-color: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+        }
+        blockquote {
+            border-left: 4px solid var(--link-color);
+            margin: 0;
+            padding-left: 16px;
+            color: #888;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 8px 12px;
+            text-align: left;
+        }
+        th {
+            background-color: var(--code-bg);
+        }
+        a { color: var(--link-color); }
+        img, svg { max-width: 100%; height: auto; }
+        #root { width: 100%; min-height: 100%; }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100px;
+            color: #888;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="loading">Loading artifact...</div>
+    </div>
+    <script>
+        function postToHost(msg) {
+            try {
+                if (window.parent && window.parent !== window) {
+                    window.parent.postMessage(msg, '*');
+                }
+            } catch(e) {}
+        }
+
+        // Notify Host that iframe is ready for content
+        function notifyReady() {
+            postToHost({
+                method: "anthropic.claude.usercontent.sandbox.ReadyForContent",
+                type: "readyForContent",
+                readyForContent: true
+            });
+            postToHost("readyForContent");
+        }
+
+        function renderContent(data) {
+            const root = document.getElementById('root');
+            if (!data) return;
+            
+            let content = '';
+            let type = '';
+            
+            if (typeof data === 'string') {
+                content = data;
+            } else {
+                content = data.content || data.markdown || data.text || data.code || (data.payload && data.payload.content) || '';
+                type = data.artifact_type || data.type || (data.payload && data.payload.type) || '';
+            }
+
+            if (!content && typeof data === 'object') {
+                for (let k of Object.keys(data)) {
+                    if (typeof data[k] === 'string' && data[k].length > 10) {
+                        content = data[k];
+                        break;
+                    }
+                }
+            }
+
+            if (type.includes('html') || content.trim().startsWith('<!DOCTYPE html') || content.trim().startsWith('<html')) {
+                root.innerHTML = content;
+            } else if (type.includes('svg') || content.trim().startsWith('<svg')) {
+                root.innerHTML = content;
+            } else {
+                if (window.marked) {
+                    root.innerHTML = marked.parse(content);
+                } else {
+                    root.innerText = content;
+                }
+            }
+        }
+
+        window.addEventListener('message', function(event) {
+            if (!event.data) return;
+            let d = event.data;
+            if (typeof d === 'string') {
+                try { d = JSON.parse(d); } catch(e) {}
+            }
+            if (d && (d.method === 'anthropic.claude.usercontent.sandbox.SetContent' || d.type === 'SetContent' || d.content)) {
+                renderContent(d.content || d.payload || d);
+            } else {
+                renderContent(d);
+            }
+        });
+
+        // Initialize handshake
+        notifyReady();
+        setTimeout(notifyReady, 100);
+        setTimeout(notifyReady, 500);
+        setTimeout(notifyReady, 1500);
+    </script>
+</body>
+</html>"""
+
+@router.get("/code/frame/{frame_id:path}", response_class=HTMLResponse)
+@router.get("/code/artifact/{artifact_id:path}", response_class=HTMLResponse)
+@router.get("/api/frame/{frame_id:path}", response_class=HTMLResponse)
+@router.get("/code/frame", response_class=HTMLResponse)
+@router.get("/code/artifact", response_class=HTMLResponse)
+@router.get("/api/frame", response_class=HTMLResponse)
+@router.get("/artifacts/sandbox", response_class=HTMLResponse)
+@router.get("/sandbox", response_class=HTMLResponse)
+async def get_sandbox_frame(frame_id: Optional[str] = None, artifact_id: Optional[str] = None):
+    headers = {
+        "Content-Type": "text/html; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Content-Security-Policy": "frame-ancestors *"
+    }
+    return HTMLResponse(content=_SANDBOX_HTML, headers=headers)
 
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/files")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/files")
