@@ -913,6 +913,14 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
                 })
     return artifacts
 
+def _find_artifact_across_all(art_id: str):
+    for cid, conv in _CONVERSATIONS.items():
+        arts = _extract_artifacts_from_conv(cid)
+        for a in arts:
+            if a.get("id") == art_id or a.get("identifier") == art_id or a.get("uuid") == art_id:
+                return cid, a
+    return None, None
+
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 @router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
@@ -922,27 +930,136 @@ async def list_conversation_artifacts(org_id: str, chat_id: str):
 
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}")
 @router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
-async def get_artifact(org_id: str, chat_id: str, artifact_id: str):
-    artifacts = _extract_artifacts_from_conv(chat_id)
-    for art in artifacts:
-        if art.get("id") == artifact_id or art.get("identifier") == artifact_id:
-            return art
-    return {"id": artifact_id, "identifier": artifact_id, "type": "application/vnd.ant.markdown", "title": "Document", "content": "", "is_complete": True}
+async def get_artifact(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
+    cid, art = _find_artifact_across_all(artifact_id)
+    if art:
+        return art
+    if chat_id:
+        for a in _extract_artifacts_from_conv(chat_id):
+            if a.get("id") == artifact_id or a.get("identifier") == artifact_id or a.get("uuid") == artifact_id:
+                return a
+    return {
+        "id": artifact_id,
+        "uuid": artifact_id,
+        "identifier": artifact_id,
+        "type": "application/vnd.ant.markdown",
+        "title": "Document",
+        "content": "",
+        "is_complete": True
+    }
 
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/versions")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/versions")
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions")
-async def get_artifact_versions(org_id: str, chat_id: str, artifact_id: str):
-    artifacts = _extract_artifacts_from_conv(chat_id)
-    for art in artifacts:
-        if art.get("id") == artifact_id or art.get("identifier") == artifact_id:
-            return {"versions": [art], "data": [art]}
-    return {"versions": [], "data": []}
+@router.get("/hermes/api/organizations/{org_id}/artifacts/{artifact_id}/versions")
+async def get_artifact_versions(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
+    cid, art = _find_artifact_across_all(artifact_id)
+    if not art and chat_id:
+        for a in _extract_artifacts_from_conv(chat_id):
+            if a.get("id") == artifact_id or a.get("identifier") == artifact_id or a.get("uuid") == artifact_id:
+                art = a
+                break
+    
+    if art:
+        version_record = {
+            "uuid": art.get("version_uuid") or str(uuid.uuid4()),
+            "artifact_uuid": art.get("uuid") or artifact_id,
+            "message_uuid": str(uuid.uuid4()),
+            "artifact_type": art.get("type", "application/vnd.ant.markdown"),
+            "code_language": art.get("language", ""),
+            "title": art.get("title", "Document"),
+            "result_state": "complete",
+            "published_artifact_uuid": None,
+            "published_artifact_deleted_at": None,
+            "source": "generated",
+            "visibility": "private",
+            "created_at": art.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "content": art.get("content", "")
+        }
+        return {
+            "artifact_versions": [version_record],
+            "versions": [version_record],
+            "data": [version_record]
+        }
+    
+    fallback_version = {
+        "uuid": str(uuid.uuid4()),
+        "artifact_uuid": artifact_id,
+        "message_uuid": str(uuid.uuid4()),
+        "artifact_type": "application/vnd.ant.markdown",
+        "code_language": "",
+        "title": "Document",
+        "result_state": "complete",
+        "published_artifact_uuid": None,
+        "published_artifact_deleted_at": None,
+        "source": "generated",
+        "visibility": "private",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "content": ""
+    }
+    return {
+        "artifact_versions": [fallback_version],
+        "versions": [fallback_version],
+        "data": [fallback_version]
+    }
 
+@router.get("/api/organizations/{org_id}/user_artifacts")
+@router.get("/organizations/{org_id}/user_artifacts")
+@router.get("/hermes/api/organizations/{org_id}/user_artifacts")
+async def list_user_artifacts(org_id: str):
+    all_user_arts = []
+    for cid, conv in _CONVERSATIONS.items():
+        for a in _extract_artifacts_from_conv(cid):
+            all_user_arts.append({
+                "uuid": a.get("uuid") or a.get("id"),
+                "artifact_identifier": a.get("identifier") or a.get("id"),
+                "title": a.get("title", "Document"),
+                "artifact_type": a.get("type", "application/vnd.ant.markdown"),
+                "code_language": a.get("language", ""),
+                "chat_conversation_uuid": cid,
+                "preview": (a.get("content", "")[:100] + "...") if len(a.get("content", "")) > 100 else a.get("content", ""),
+                "created_at": a.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "updated_at": a.get("updated_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "latest_published_artifact_uuid": None
+            })
+    return {"artifacts": all_user_arts, "data": all_user_arts}
+
+@router.get("/api/organizations/{org_id}/published_artifacts/{artifact_id}")
+@router.get("/organizations/{org_id}/published_artifacts/{artifact_id}")
+@router.get("/hermes/api/organizations/{org_id}/published_artifacts/{artifact_id}")
+async def get_published_artifact(org_id: str, artifact_id: str):
+    cid, art = _find_artifact_across_all(artifact_id)
+    content = art.get("content", "") if art else ""
+    return {"content": content}
+
+@router.post("/api/organizations/{org_id}/publish_artifact")
+@router.post("/organizations/{org_id}/publish_artifact")
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
-async def publish_artifact(org_id: str, chat_id: str, artifact_id: str, request: Request):
-    return {"status": "published", "artifact_id": artifact_id, "url": f"https://claude.ai/artifacts/{artifact_id}"}
+async def publish_artifact(org_id: str, request: Request, chat_id: Optional[str] = None, artifact_id: Optional[str] = None):
+    art_id = artifact_id or str(uuid.uuid4())
+    cid, art = _find_artifact_across_all(art_id)
+    pub_uuid = str(uuid.uuid4())
+    return {
+        "published_artifact_uuid": pub_uuid,
+        "artifact_identifier": art_id,
+        "title": art.get("title", "Document") if art else "Document",
+        "artifact_type": art.get("type", "application/vnd.ant.markdown") if art else "application/vnd.ant.markdown",
+        "code_language": art.get("language", "") if art else "",
+        "message_uuid": str(uuid.uuid4()),
+        "deleted": False,
+        "status": "published",
+        "url": f"https://claude.ai/artifacts/{art_id}"
+    }
+
+@router.put("/api/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
+@router.put("/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
+async def update_artifact_visibility(org_id: str, artifact_id: str, request: Request):
+    return {"status": "ok", "artifact_id": artifact_id}
 
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/files")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/files")
