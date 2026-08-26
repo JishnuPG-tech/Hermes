@@ -160,7 +160,7 @@ h1{color:#58a6ff;font-size:1.2rem;margin:0 0 12px}
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
-                    content = "".join(lines[-80:])
+                    import html as html_lib; content = html_lib.escape("".join(lines[-80:]))
             else:
                 content = "(log file not yet created)"
                 status = "warn"
@@ -192,3 +192,4 @@ async def logs_service(service: str):
 
 # ── Catch-all proxy -> Hermes agent ─────────────────────────────
 app.include_router(hermes_proxy_router)
+
