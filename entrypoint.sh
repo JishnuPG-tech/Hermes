@@ -305,7 +305,7 @@ while true; do
     fi
 
     # FastAPI: check if port 8000 responds
-    if ! curl -fsS "http://127.0.0.1:8000/health/live" >/dev/null 2>&1; then
+    if ! curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
         log_error "FastAPI down, restarting..."
         python3 -m uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --workers 1 &
         FASTAPI_PID=$!
@@ -350,3 +350,4 @@ while true; do
         sleep 2
     fi
 done
+
