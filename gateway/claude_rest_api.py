@@ -947,7 +947,7 @@ async def get_artifact_versions(org_id: str, artifact_id: str, chat_id: Optional
             "result_state": "complete",
             "published_artifact_uuid": None,
             "published_artifact_deleted_at": None,
-            "source": "generated",
+            "source": "c",
             "visibility": "private",
             "created_at": art.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "content": art.get("content", "")
@@ -968,7 +968,7 @@ async def get_artifact_versions(org_id: str, artifact_id: str, chat_id: Optional
         "result_state": "complete",
         "published_artifact_uuid": None,
         "published_artifact_deleted_at": None,
-        "source": "generated",
+        "source": "c",
         "visibility": "private",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "content": ""
@@ -1368,3 +1368,4 @@ async def feature_flags(org_id: str):
         }
     }
 # Model selector config fix 08/25/2026 15:48:46
+
