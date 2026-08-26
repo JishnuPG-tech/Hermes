@@ -71,11 +71,11 @@ async def proxy_http_request(target_url, request, extra_headers=None, html_fixup
         or resp.headers.get("transfer-encoding") == "chunked"
     )
 
-    raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1"))
-        for k, v in resp.headers.items()
+    # Filter hop-by-hop headers but keep as strings
+    filtered_headers = {
+        k: v for k, v in resp.headers.items()
         if k.lower() not in _HOP_BY_HOP
-    ]
+    }
 
     if is_stream:
         async def stream_generator():
@@ -89,8 +89,8 @@ async def proxy_http_request(target_url, request, extra_headers=None, html_fixup
             stream_generator(),
             status_code=resp.status_code,
             media_type=content_type or None,
+            headers=filtered_headers,
         )
-        streaming.raw_headers = raw_headers
         return streaming
 
     content = await resp.aread()
@@ -104,13 +104,12 @@ async def proxy_http_request(target_url, request, extra_headers=None, html_fixup
         except Exception:
             pass
 
-    normal = Response(
+    return Response(
         content=content,
         status_code=resp.status_code,
         media_type=content_type or None,
+        headers=filtered_headers,
     )
-    normal.raw_headers = raw_headers
-    return normal
 
 
 async def proxy_websocket_stream(websocket: WebSocket, target_ws_url: str):
