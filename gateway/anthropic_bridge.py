@@ -37,17 +37,17 @@ DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-agent")
 
 
 ARTIFACT_PATTERN = re.compile(
-    r\'<antArtifact\s+identifier="([^"]+)"\s+title="([^"]+)"\s+artifactType="([^"]+)">(.*?)</antArtifact>\',
+    r'<antArtifact\s+identifier="([^"]+)"\s+title="([^"]+)"\s+artifactType="([^"]+)">(.*?)</antArtifact>',
     re.DOTALL
 )
 
 THINKING_PATTERN = re.compile(
-    r\'<thinking>(.*?)</thinking>\',
+    r'<thinking>(.*?)</thinking>',
     re.DOTALL
 )
 
 THINKING_SUMMARY_PATTERN = re.compile(
-    r\'<thinkingSummary>(.*?)</thinkingSummary>\',
+    r'<thinkingSummary>(.*?)</thinkingSummary>',
     re.DOTALL
 )
 
@@ -182,7 +182,7 @@ class ContentBlockEmitter:
         self.message_id = "msg_" + uuid.uuid4().hex
         self.block_index = 0
         self.started = False
-        self.blocks_emitted = []  # Track what we\'ve emitted
+        self.blocks_emitted = []  # Track what we have emitted
     
     def _next_index(self) -> int:
         idx = self.block_index
@@ -553,7 +553,7 @@ def create_message_start(message_id: str, model: str, input_tokens: int = 10) ->
             }
         }
     }
-    return f"event: message_start\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: message_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_thinking_block_start(index: int = 0) -> str:
@@ -565,7 +565,7 @@ def create_thinking_block_start(index: int = 0) -> str:
             "thinking": ""
         }
     }
-    return f"event: content_block_start\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_thinking_block_delta(thinking: str, index: int = 0) -> str:
@@ -577,7 +577,7 @@ def create_thinking_block_delta(thinking: str, index: int = 0) -> str:
             "thinking": thinking
         }
     }
-    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_thinking_block_stop(index: int = 0) -> str:
@@ -585,7 +585,7 @@ def create_thinking_block_stop(index: int = 0) -> str:
         "type": "content_block_stop",
         "index": index
     }
-    return f"event: content_block_stop\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_stop\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_content_block_retract(from_index: int = 0) -> str:
@@ -593,7 +593,7 @@ def create_content_block_retract(from_index: int = 0) -> str:
         "type": "content_block_retract",
         "from_index": from_index
     }
-    return f"event: content_block_retract\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_retract\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_thinking_summary_start(summary: str = "", index: int = 0) -> str:
@@ -605,7 +605,7 @@ def create_thinking_summary_start(summary: str = "", index: int = 0) -> str:
             "summary": summary
         }
     }
-    return f"event: content_block_start\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_thinking_summary_delta(summary: str, index: int = 0) -> str:
@@ -617,7 +617,7 @@ def create_thinking_summary_delta(summary: str, index: int = 0) -> str:
             "summary": summary
         }
     }
-    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_content_block_start(index: int = 0) -> str:
@@ -629,7 +629,7 @@ def create_content_block_start(index: int = 0) -> str:
             "text": ""
         }
     }
-    return f"event: content_block_start\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_content_block_delta(text: str, index: int = 0) -> str:
@@ -641,7 +641,7 @@ def create_content_block_delta(text: str, index: int = 0) -> str:
             "text": text
         }
     }
-    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_content_block_stop(index: int = 0) -> str:
@@ -649,7 +649,7 @@ def create_content_block_stop(index: int = 0) -> str:
         "type": "content_block_stop",
         "index": index
     }
-    return f"event: content_block_stop\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: content_block_stop\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_message_delta(stop_reason: str = "end_turn", output_tokens: int = 15) -> str:
@@ -663,11 +663,11 @@ def create_message_delta(stop_reason: str = "end_turn", output_tokens: int = 15)
             "output_tokens": output_tokens
         }
     }
-    return f"event: message_delta\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: message_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
 def create_message_stop() -> str:
     event = {
         "type": "message_stop"
     }
-    return f"event: message_stop\ndata: {json.dumps(event, separators=(",", ":"))}\n\n"
+    return f"event: message_stop\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
