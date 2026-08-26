@@ -52,6 +52,7 @@ app.include_router(v1_sessions_router)  # v1 Sessions & Code API - MUST be befor
 app.include_router(claude_rest_router)
 app.include_router(omniroute_router)
 app.include_router(ignis_router)
+app.include_router(hermes_proxy_router)  # Catch-all proxy for /v1/* and /health/*
 
 
 # ── Root & Health ───────────────────────────────────────────────
