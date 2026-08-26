@@ -37,18 +37,18 @@ DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-agent")
 
 
 ARTIFACT_PATTERN = re.compile(
-    r'<antArtifact\s+identifier="([^"]+)"\s+title="([^"]+)"\s+artifactType="([^"]+)">(.*?)</antArtifact>',
-    re.DOTALL
+    r'<antArtifact\s+([^>]+)>(.*?)(?:</antArtifact>|$)',
+    re.DOTALL | re.IGNORECASE
 )
 
 THINKING_PATTERN = re.compile(
     r'<thinking>(.*?)</thinking>',
-    re.DOTALL
+    re.DOTALL | re.IGNORECASE
 )
 
 THINKING_SUMMARY_PATTERN = re.compile(
     r'<thinkingSummary>(.*?)</thinkingSummary>',
-    re.DOTALL
+    re.DOTALL | re.IGNORECASE
 )
 
 
@@ -56,11 +56,17 @@ def extract_artifacts(text: str) -> List[Dict[str, Any]]:
     """Extract artifact blocks from text."""
     artifacts = []
     for match in ARTIFACT_PATTERN.finditer(text):
+        attrs_str = match.group(1)
+        content = match.group(2).strip()
+        attrs = dict(re.findall(r'([a-zA-Z0-9_]+)="([^"]+)"', attrs_str))
+        art_id = attrs.get("identifier") or attrs.get("id") or f"art_{uuid.uuid4().hex[:12]}"
+        title = attrs.get("title") or "Artifact"
+        art_type = attrs.get("artifactType") or attrs.get("type") or "application/vnd.ant.markdown"
         artifacts.append({
-            "identifier": match.group(1),
-            "title": match.group(2),
-            "artifactType": match.group(3),
-            "content": match.group(4).strip()
+            "identifier": art_id,
+            "title": title,
+            "artifactType": art_type,
+            "content": content
         })
     return artifacts
 
@@ -182,7 +188,7 @@ class ContentBlockEmitter:
         self.message_id = "msg_" + uuid.uuid4().hex
         self.block_index = 0
         self.started = False
-        self.blocks_emitted = []  # Track what we have emitted
+        self.blocks_emitted = []
     
     def _next_index(self) -> int:
         idx = self.block_index
@@ -244,12 +250,10 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
     emitter = ContentBlockEmitter(request_model)
     message_started = False
     
-    # Buffer for accumulating text before we know block type
     text_buffer = ""
     current_block_index = None
-    current_block_type = None  # "text", "thinking", "artifact", "tool_use"
+    current_block_type = None
     
-    # Track partial content for multi-chunk blocks
     accumulated_thinking = ""
     accumulated_text = ""
     
@@ -269,7 +273,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
             reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
             
-            # Handle reasoning_content as ThinkingDelta (live thinking streaming)
             if reasoning_piece:
                 if not message_started:
                     message_started = True
@@ -292,9 +295,7 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                 })
                 continue
             
-            # Handle tool calls first
             if tool_calls:
-                # Flush any pending text/thinking block
                 if current_block_index is not None:
                     yield emitter.emit_content_block_stop(current_block_index)
                     current_block_index = None
@@ -303,14 +304,12 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     tool_idx = emitter._next_index()
-                    # Tool use start
                     yield emitter.emit_content_block_start("tool_use", {
                         "type": "tool_use",
                         "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
                         "name": func.get("name", "unknown"),
                         "input": json.loads(func.get("arguments", "{}"))
                     })
-                    # Tool use delta (arguments stream in)
                     if func.get("arguments"):
                         yield emitter.emit_content_block_delta(tool_idx, "input_json_delta", {
                             "partial_json": func["arguments"]
@@ -321,18 +320,14 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
             if piece is None:
                 continue
             
-            # First piece - send message_start
             if not message_started:
                 message_started = True
                 yield await emitter.emit_message_start()
             
-            # Accumulate and detect special blocks
             text_buffer += piece
             
-            # Check for complete artifact blocks
             artifacts = extract_artifacts(text_buffer)
             if artifacts:
-                # Flush any pending text before artifact
                 if current_block_type == "text" and current_block_index is not None:
                     yield emitter.emit_content_block_stop(current_block_index)
                     current_block_index = None
@@ -340,7 +335,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                 
                 for artifact in artifacts:
                     art_idx = emitter._next_index()
-                    # Emit artifact block
                     yield emitter.emit_content_block_start("artifact", {
                         "type": "artifact",
                         "identifier": artifact["identifier"],
@@ -350,19 +344,15 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                     })
                     yield emitter.emit_content_block_stop(art_idx)
                 
-                # Remove artifacts from buffer
                 text_buffer = remove_special_blocks(text_buffer)
                 continue
             
-            # Check for thinking blocks
             thinking_blocks = extract_thinking(text_buffer)
             if thinking_blocks and current_block_type != "thinking":
-                # Flush pending text
                 if current_block_type == "text" and current_block_index is not None:
                     yield emitter.emit_content_block_stop(current_block_index)
                     current_block_index = None
                 
-                # Start thinking block
                 current_block_index = emitter._next_index()
                 current_block_type = "thinking"
                 yield emitter.emit_content_block_start("thinking", {
@@ -371,7 +361,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                     "signature": ""
                 })
             
-            # Check for thinking summaries
             thinking_summaries = extract_thinking_summaries(text_buffer)
             if thinking_summaries:
                 for summary in thinking_summaries:
@@ -385,7 +374,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                 text_buffer = remove_special_blocks(text_buffer)
                 continue
             
-            # Emit text/thinking deltas
             if piece:
                 if current_block_type == "thinking":
                     accumulated_thinking += piece
@@ -393,7 +381,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                         "thinking": piece
                     })
                 else:
-                    # Regular text
                     if current_block_type != "text":
                         if current_block_index is not None:
                             yield emitter.emit_content_block_stop(current_block_index)
@@ -408,7 +395,6 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                         "text": piece
                     })
         
-        # Handle any remaining text_buffer for artifacts/thinking at end
         if text_buffer:
             artifacts = extract_artifacts(text_buffer)
             for artifact in artifacts:
