@@ -4,15 +4,11 @@ Implements the v1 endpoints that the APK expects at /hermes/v1/*
 Proxies to internal Hermes Agent (:8642) or handles locally with Redis/SQLite storage
 """
 import os
-import json
-import uuid
-import time
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Request, Query, Body, Path, HTTPException, Header
 from fastapi.responses import JSONResponse, StreamingResponse
-import httpx
 
-from gateway.utils import get_http_client, build_upstream_headers
+from gateway.utils import proxy_http_request
 
 router = APIRouter(tags=["v1 Sessions & Code"])
 
@@ -20,11 +16,6 @@ router = APIRouter(tags=["v1 Sessions & Code"])
 HERMES_INTERNAL_PORT = int(os.getenv("HERMES_INTERNAL_PORT", "8642"))
 HERMES_BASE = f"http://127.0.0.1:{HERMES_INTERNAL_PORT}"
 API_SERVER_KEY = os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", ""))
-
-# In-memory storage for sessions (replace with Redis/SQLite for production)
-_sessions: Dict[str, Dict] = {}
-_session_events: Dict[str, List[Dict]] = {}
-_session_counter = 0
 
 
 def _auth_headers(request: Request) -> dict:
@@ -36,57 +27,8 @@ def _auth_headers(request: Request) -> dict:
 
 async def _proxy_to_hermes(path: str, request: Request):
     """Proxy request to internal Hermes Agent at /v1/{path}"""
-    client = get_http_client()
     target = f"{HERMES_BASE}/v1/{path}"
-    headers = build_upstream_headers(request, _auth_headers(request))
-    body = await request.body()
-    req = client.build_request(
-        method=request.method,
-        url=target,
-        headers=headers,
-        params=dict(request.query_params),
-        content=body,
-    )
-    resp = await client.send(req, stream=True)
-
-    content_type = resp.headers.get("content-type", "")
-    is_stream = (
-        "text/event-stream" in content_type
-        or "video/" in content_type
-        or "audio/" in content_type
-        or resp.headers.get("transfer-encoding") == "chunked"
-    )
-
-    # Filter hop-by-hop headers but keep as strings
-    filtered_headers = {
-        k: v for k, v in resp.headers.items()
-        if k.lower() not in ("connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "content-length", "content-encoding")
-    }
-
-    if is_stream:
-        async def stream_generator():
-            try:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
-            finally:
-                await resp.aclose()
-
-        streaming = StreamingResponse(
-            stream_generator(),
-            status_code=resp.status_code,
-            media_type=content_type or None,
-            headers=filtered_headers,
-        )
-        return streaming
-
-    content = await resp.aread()
-    await resp.aclose()
-
-    return JSONResponse(
-        content=json.loads(content) if content else {},
-        status_code=resp.status_code,
-        headers=filtered_headers,
-    )
+    return await proxy_http_request(target, request, extra_headers=_auth_headers(request))
 
 
 # ============================================================
