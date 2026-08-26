@@ -1,6 +1,6 @@
 """
 v1 Sessions & Code API Router
-Implements the v1 endpoints that the APK expects at /hermes/v1/*
+Implements the v1 endpoints that the APK expects at /v1/*
 Proxies to internal Hermes Agent (:8642) or handles locally with Redis/SQLite storage
 """
 import os
@@ -35,7 +35,7 @@ async def _proxy_to_hermes(path: str, request: Request):
 # v1 CODE SESSIONS
 # ============================================================
 
-@router.get("/hermes/v1/code/sessions")
+@router.get("/v1/code/sessions")
 async def list_code_sessions(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
@@ -45,7 +45,7 @@ async def list_code_sessions(
     return await _proxy_to_hermes("code/sessions", request)
 
 
-@router.post("/hermes/v1/code/sessions")
+@router.post("/v1/code/sessions")
 async def create_code_session(
     request: Request,
     body: dict = Body(...),
@@ -54,7 +54,7 @@ async def create_code_session(
     return await _proxy_to_hermes("code/sessions", request)
 
 
-@router.get("/hermes/v1/code/sessions/{session_id}")
+@router.get("/v1/code/sessions/{session_id}")
 async def get_code_session(
     request: Request,
     session_id: str = Path(...),
@@ -63,7 +63,7 @@ async def get_code_session(
     return await _proxy_to_hermes(f"code/sessions/{session_id}", request)
 
 
-@router.delete("/hermes/v1/code/sessions/{session_id}")
+@router.delete("/v1/code/sessions/{session_id}")
 async def delete_code_session(
     request: Request,
     session_id: str = Path(...),
@@ -72,7 +72,7 @@ async def delete_code_session(
     return await _proxy_to_hermes(f"code/sessions/{session_id}", request)
 
 
-@router.post("/hermes/v1/code/sessions/{session_id}/archive")
+@router.post("/v1/code/sessions/{session_id}/archive")
 async def archive_code_session(
     request: Request,
     session_id: str = Path(...),
@@ -81,7 +81,7 @@ async def archive_code_session(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/archive", request)
 
 
-@router.post("/hermes/v1/code/sessions/{session_id}/unarchive")
+@router.post("/v1/code/sessions/{session_id}/unarchive")
 async def unarchive_code_session(
     request: Request,
     session_id: str = Path(...),
@@ -90,7 +90,7 @@ async def unarchive_code_session(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/unarchive", request)
 
 
-@router.get("/hermes/v1/code/sessions/{session_id}/events")
+@router.get("/v1/code/sessions/{session_id}/events")
 async def get_code_session_events(
     request: Request,
     session_id: str = Path(...),
@@ -101,7 +101,7 @@ async def get_code_session_events(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/events", request)
 
 
-@router.get("/hermes/v1/code/sessions/{session_id}/events/stream")
+@router.get("/v1/code/sessions/{session_id}/events/stream")
 async def stream_code_session_events(
     request: Request,
     session_id: str = Path(...),
@@ -111,7 +111,7 @@ async def stream_code_session_events(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/events/stream", request)
 
 
-@router.post("/hermes/v1/code/sessions/{session_id}/mark_read")
+@router.post("/v1/code/sessions/{session_id}/mark_read")
 async def mark_code_session_read(
     request: Request,
     session_id: str = Path(...),
@@ -121,7 +121,7 @@ async def mark_code_session_read(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/mark_read", request)
 
 
-@router.post("/hermes/v1/code/sessions/{session_id}/ping")
+@router.post("/v1/code/sessions/{session_id}/ping")
 async def ping_code_session(
     request: Request,
     session_id: str = Path(...),
@@ -130,7 +130,7 @@ async def ping_code_session(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/ping", request)
 
 
-@router.get("/hermes/v1/code/sessions/{session_id}/mcp-servers")
+@router.get("/v1/code/sessions/{session_id}/mcp-servers")
 async def list_session_mcp_servers(
     request: Request,
     session_id: str = Path(...),
@@ -139,7 +139,7 @@ async def list_session_mcp_servers(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/mcp-servers", request)
 
 
-@router.get("/hermes/v1/code/sessions/{session_id}/client/presence")
+@router.get("/v1/code/sessions/{session_id}/client/presence")
 async def get_session_client_presence(
     request: Request,
     session_id: str = Path(...),
@@ -148,7 +148,7 @@ async def get_session_client_presence(
     return await _proxy_to_hermes(f"code/sessions/{session_id}/client/presence", request)
 
 
-@router.get("/hermes/v1/code/sessions/agent_owned")
+@router.get("/v1/code/sessions/agent_owned")
 async def list_agent_owned_sessions(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
@@ -157,7 +157,7 @@ async def list_agent_owned_sessions(
     return await _proxy_to_hermes("code/sessions/agent_owned", request)
 
 
-@router.get("/hermes/v1/code/session_groupings")
+@router.get("/v1/code/session_groupings")
 async def get_code_session_groupings(request: Request):
     """Get code session groupings"""
     return await _proxy_to_hermes("code/session_groupings", request)
@@ -167,7 +167,7 @@ async def get_code_session_groupings(request: Request):
 # v1 CODE GITHUB INTEGRATION
 # ============================================================
 
-@router.post("/hermes/v1/code/github/set-pr-auto-merge")
+@router.post("/v1/code/github/set-pr-auto-merge")
 async def set_pr_auto_merge(
     request: Request,
     body: dict = Body(...),
@@ -176,7 +176,7 @@ async def set_pr_auto_merge(
     return await _proxy_to_hermes("code/github/set-pr-auto-merge", request)
 
 
-@router.post("/hermes/v1/code/github/compare-refs")
+@router.post("/v1/code/github/compare-refs")
 async def compare_github_refs(
     request: Request,
     body: dict = Body(...),
@@ -185,7 +185,7 @@ async def compare_github_refs(
     return await _proxy_to_hermes("code/github/compare-refs", request)
 
 
-@router.post("/hermes/v1/code/github/batch-branch-status")
+@router.post("/v1/code/github/batch-branch-status")
 async def batch_branch_status(
     request: Request,
     body: dict = Body(...),
@@ -194,7 +194,7 @@ async def batch_branch_status(
     return await _proxy_to_hermes("code/github/batch-branch-status", request)
 
 
-@router.post("/hermes/v1/code/github/subscribe-pr")
+@router.post("/v1/code/github/subscribe-pr")
 async def subscribe_pr(
     request: Request,
     body: dict = Body(...),
@@ -203,7 +203,7 @@ async def subscribe_pr(
     return await _proxy_to_hermes("code/github/subscribe-pr", request)
 
 
-@router.post("/hermes/v1/code/github/unsubscribe-pr")
+@router.post("/v1/code/github/unsubscribe-pr")
 async def unsubscribe_pr(
     request: Request,
     body: dict = Body(...),
@@ -212,7 +212,7 @@ async def unsubscribe_pr(
     return await _proxy_to_hermes("code/github/unsubscribe-pr", request)
 
 
-@router.get("/hermes/v1/code/github/get-file-content")
+@router.get("/v1/code/github/get-file-content")
 async def get_github_file_content(
     request: Request,
     owner: str = Query(...),
@@ -224,7 +224,7 @@ async def get_github_file_content(
     return await _proxy_to_hermes("code/github/get-file-content", request)
 
 
-@router.get("/hermes/v1/code/runners/self-hosted/pools")
+@router.get("/v1/code/runners/self-hosted/pools")
 async def list_self_hosted_pools(request: Request):
     """List self-hosted runner pools"""
     return await _proxy_to_hermes("code/runners/self-hosted/pools", request)
@@ -234,7 +234,7 @@ async def list_self_hosted_pools(request: Request):
 # v1 SESSIONS (General)
 # ============================================================
 
-@router.get("/hermes/v1/sessions")
+@router.get("/v1/sessions")
 async def list_sessions(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
@@ -244,7 +244,7 @@ async def list_sessions(
     return await _proxy_to_hermes("sessions", request)
 
 
-@router.post("/hermes/v1/sessions")
+@router.post("/v1/sessions")
 async def create_session(
     request: Request,
     body: dict = Body(...),
@@ -253,7 +253,7 @@ async def create_session(
     return await _proxy_to_hermes("sessions", request)
 
 
-@router.get("/hermes/v1/sessions/{session_id}")
+@router.get("/v1/sessions/{session_id}")
 async def get_session(
     request: Request,
     session_id: str = Path(...),
@@ -262,7 +262,7 @@ async def get_session(
     return await _proxy_to_hermes(f"sessions/{session_id}", request)
 
 
-@router.get("/hermes/v1/sessions/{session_id}/events")
+@router.get("/v1/sessions/{session_id}/events")
 async def get_session_events(
     request: Request,
     session_id: str = Path(...),
@@ -273,7 +273,7 @@ async def get_session_events(
     return await _proxy_to_hermes(f"sessions/{session_id}/events", request)
 
 
-@router.get("/hermes/v1/sessions/{session_id}/share-status")
+@router.get("/v1/sessions/{session_id}/share-status")
 async def get_session_share_status(
     request: Request,
     session_id: str = Path(...),
@@ -282,13 +282,13 @@ async def get_session_share_status(
     return await _proxy_to_hermes(f"sessions/{session_id}/share-status", request)
 
 
-@router.get("/hermes/v1/sessions/watch")
+@router.get("/v1/sessions/watch")
 async def watch_sessions(request: Request):
     """Watch sessions (SSE)"""
     return await _proxy_to_hermes("sessions/watch", request)
 
 
-@router.get("/hermes/v1/sessions-share")
+@router.get("/v1/sessions-share")
 async def list_session_shares(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
@@ -297,7 +297,7 @@ async def list_session_shares(
     return await _proxy_to_hermes("sessions-share", request)
 
 
-@router.post("/hermes/v1/sessions-share")
+@router.post("/v1/sessions-share")
 async def create_session_share(
     request: Request,
     body: dict = Body(...),
@@ -306,7 +306,7 @@ async def create_session_share(
     return await _proxy_to_hermes("sessions-share", request)
 
 
-@router.get("/hermes/v1/sessions-share/{share_id}")
+@router.get("/v1/sessions-share/{share_id}")
 async def get_session_share(
     request: Request,
     share_id: str = Path(...),
@@ -319,7 +319,7 @@ async def get_session_share(
 # v1 ENVIRONMENT PROVIDERS
 # ============================================================
 
-@router.get("/hermes/v1/environment_providers/private/organizations/{org_id}/environments")
+@router.get("/v1/environment_providers/private/organizations/{org_id}/environments")
 async def list_environments(
     request: Request,
     org_id: str = Path(...),
@@ -328,7 +328,7 @@ async def list_environments(
     return await _proxy_to_hermes(f"environment_providers/private/organizations/{org_id}/environments", request)
 
 
-@router.get("/hermes/v1/environment_providers/private/organizations/{org_id}/environments/{env_id}")
+@router.get("/v1/environment_providers/private/organizations/{org_id}/environments/{env_id}")
 async def get_environment(
     request: Request,
     org_id: str = Path(...),
@@ -338,7 +338,7 @@ async def get_environment(
     return await _proxy_to_hermes(f"environment_providers/private/organizations/{org_id}/environments/{env_id}", request)
 
 
-@router.post("/hermes/v1/environment_providers/private/organizations/{org_id}/environments/{env_id}/archive")
+@router.post("/v1/environment_providers/private/organizations/{org_id}/environments/{env_id}/archive")
 async def archive_environment(
     request: Request,
     org_id: str = Path(...),
@@ -348,7 +348,7 @@ async def archive_environment(
     return await _proxy_to_hermes(f"environment_providers/private/organizations/{org_id}/environments/{env_id}/archive", request)
 
 
-@router.post("/hermes/v1/environment_providers/private/organizations/{org_id}/cloud/create")
+@router.post("/v1/environment_providers/private/organizations/{org_id}/cloud/create")
 async def create_cloud_environment(
     request: Request,
     org_id: str = Path(...),
@@ -362,7 +362,7 @@ async def create_cloud_environment(
 # v1 SESSION INGRESS (Git Proxy)
 # ============================================================
 
-@router.get("/hermes/v1/session_ingress/session/{session_id}/git_proxy/file")
+@router.get("/v1/session_ingress/session/{session_id}/git_proxy/file")
 async def git_proxy_file(
     request: Request,
     session_id: str = Path(...),
@@ -373,7 +373,7 @@ async def git_proxy_file(
     return await _proxy_to_hermes(f"session_ingress/session/{session_id}/git_proxy/file", request)
 
 
-@router.get("/hermes/v1/session_ingress/session/{session_id}/git_proxy/compare")
+@router.get("/v1/session_ingress/session/{session_id}/git_proxy/compare")
 async def git_proxy_compare(
     request: Request,
     session_id: str = Path(...),
@@ -388,13 +388,13 @@ async def git_proxy_compare(
 # v1 TRIGGERS
 # ============================================================
 
-@router.get("/hermes/v1/triggers")
+@router.get("/v1/triggers")
 async def list_triggers(request: Request):
     """List triggers"""
     return await _proxy_to_hermes("triggers", request)
 
 
-@router.get("/hermes/v1/triggers/{trigger_id}")
+@router.get("/v1/triggers/{trigger_id}")
 async def get_trigger(
     request: Request,
     trigger_id: str = Path(...),
@@ -407,7 +407,7 @@ async def get_trigger(
 # v1 FILESTORE (File Upload)
 # ============================================================
 
-@router.post("/hermes/v1/filestore/fs/createFile")
+@router.post("/v1/filestore/fs/createFile")
 async def create_filestore_file(
     request: Request,
     body: dict = Body(...),
@@ -416,7 +416,7 @@ async def create_filestore_file(
     return await _proxy_to_hermes("filestore/fs/createFile", request)
 
 
-@router.post("/hermes/v1/organizations/{org_id}/conversations/{conv_id}/files/prepare-upload")
+@router.post("/v1/organizations/{org_id}/conversations/{conv_id}/files/prepare-upload")
 async def prepare_file_upload(
     request: Request,
     org_id: str = Path(...),
@@ -431,7 +431,7 @@ async def prepare_file_upload(
 # CHAT FEEDBACK
 # ============================================================
 
-@router.post("/hermes/v1/organizations/{org}/chat_conversations/{chat}/chat_messages/{message}/chat_feedback")
+@router.post("/v1/organizations/{org}/chat_conversations/{chat}/chat_messages/{message}/chat_feedback")
 async def submit_chat_feedback(
     request: Request,
     org: str = Path(...),
@@ -447,7 +447,7 @@ async def submit_chat_feedback(
 # HEALTH CHECK FOR V1
 # ============================================================
 
-@router.get("/hermes/v1/health")
+@router.get("/v1/health")
 async def v1_health(request: Request):
     """v1 API health check"""
     return await _proxy_to_hermes("health", request)
