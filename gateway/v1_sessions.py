@@ -57,11 +57,11 @@ async def _proxy_to_hermes(path: str, request: Request):
         or resp.headers.get("transfer-encoding") == "chunked"
     )
 
-    raw_headers = [
-        (k.encode("latin-1"), v.encode("latin-1"))
-        for k, v in resp.headers.items()
+    # Filter hop-by-hop headers but keep as strings
+    filtered_headers = {
+        k: v for k, v in resp.headers.items()
         if k.lower() not in ("connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade", "content-length", "content-encoding")
-    ]
+    }
 
     if is_stream:
         async def stream_generator():
@@ -75,8 +75,8 @@ async def _proxy_to_hermes(path: str, request: Request):
             stream_generator(),
             status_code=resp.status_code,
             media_type=content_type or None,
+            headers=filtered_headers,
         )
-        streaming.raw_headers = raw_headers
         return streaming
 
     content = await resp.aread()
@@ -85,7 +85,7 @@ async def _proxy_to_hermes(path: str, request: Request):
     return JSONResponse(
         content=json.loads(content) if content else {},
         status_code=resp.status_code,
-        headers=dict(raw_headers),
+        headers=filtered_headers,
     )
 
 
