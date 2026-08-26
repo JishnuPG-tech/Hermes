@@ -106,8 +106,8 @@ async def handle_omniroute_proxy(request: Request, path: str, html_fixup=None):
 @router.api_route("/keys/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 @router.api_route("/stats", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 @router.api_route("/stats/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/logs", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/logs/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+# @router.api_route("/logs")
+# @router.api_route("/logs/{path:path}")
 @router.api_route("/_next/{path:path}", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def omniroute_dashboard(request: Request, path: str = ""):
     return await handle_omniroute_proxy(request, path, html_fixup=fixup_omniroute_html)
@@ -161,3 +161,4 @@ async def omniroute_ws(websocket: WebSocket):
 async def omniroute_embed_ws(websocket: WebSocket):
     target_ws = f"ws://127.0.0.1:{OMNIROUTE_EMBED_PORT}/embed-ws"
     await proxy_websocket_stream(websocket, target_ws)
+
