@@ -220,10 +220,9 @@ def format_for_email_html(text: str, subject: str = "Hermes Agent Response") -> 
 
 async def generate_agent_response(prompt: str, session_id: str = "channel_default", model: Optional[str] = None) -> str:
     """
-    Dispatches a prompt to the Hermes agentic reasoning backend.
+    Dispatches a prompt to the Hermes agentic reasoning backend with multi-provider failover.
     """
-    backend_url = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/v1")
-    api_key = os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")
+    from gateway import anthropic_bridge as ab
     selected_model = model or os.getenv("HERMES_MODEL", "auto/smart")
 
     payload = {
@@ -240,22 +239,28 @@ async def generate_agent_response(prompt: str, session_id: str = "channel_defaul
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.6,
-        "max_tokens": 3000
+        "max_tokens": 3000,
+        "stream": True
     }
 
+    accumulated = []
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{backend_url}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            else:
-                logger.error(f"Agent generation error: {resp.status_code} - {resp.text}")
-                return f"⚠️ Agent response unavailable (Status {resp.status_code}). Please retry."
+        async for chunk_str in ab.stream_upstream(payload, requested_model=selected_model, chat_id=session_id):
+            if chunk_str == "[DONE]":
+                break
+            try:
+                chunk_obj = json.loads(chunk_str)
+                delta = chunk_obj.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    accumulated.append(content)
+            except Exception:
+                pass
+
+        if accumulated:
+            return "".join(accumulated).strip()
+        else:
+            return "I am here and ready to assist you. Please send your query."
     except Exception as e:
         logger.error(f"Exception during agent generation: {e}")
         return f"⚠️ Error processing request: {e}"
