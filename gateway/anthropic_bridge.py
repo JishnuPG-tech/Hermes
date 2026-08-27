@@ -113,44 +113,118 @@ def system_to_openai(system) -> str:
     return str(system or "")
 
 
+import time
+
+# Tiered Cascading Failover Models (Ranked by speed, reliability, and capability)
+HEALTHY_FAILOVER_MODELS = [
+    "auto/coding:fast",
+    "antigravity/gemini-2.5-flash-thinking",
+    "auto/coding:pro",
+    "auto/best-coding",
+    "antigravity/gemini-3.6-flash-low",
+    "auto/coding:cheap",
+    "auto/coding:reliable",
+    "antigravity/gemini-3.1-flash-lite",
+    "auto/smart",
+    "auto/claude-sonnet"
+]
+
+MODEL_COOLDOWN_MAP: Dict[str, float] = {} # model_name -> expiration timestamp
+ACTIVE_HERMES_MODEL = "auto/coding:fast"
+CONVERSATION_MODEL_MAP: Dict[str, str] = {} # chat_id -> model_name
+
+def set_active_model(model_name: str, chat_id: Optional[str] = None):
+    global ACTIVE_HERMES_MODEL
+    if chat_id:
+        CONVERSATION_MODEL_MAP[chat_id] = model_name
+    else:
+        ACTIVE_HERMES_MODEL = model_name
+
+def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optional[str] = None) -> List[str]:
+    candidates = []
+    now = time.time()
+    
+    # 1. Check conversation-specific override
+    if chat_id and chat_id in CONVERSATION_MODEL_MAP:
+        candidates.append(CONVERSATION_MODEL_MAP[chat_id])
+    
+    # 2. Check requested model
+    if requested_model and requested_model not in ["hermes-agent", "claude-3-5-sonnet-20241022", "default"]:
+        if requested_model not in candidates:
+            candidates.append(requested_model)
+            
+    # 3. Add global active model
+    if ACTIVE_HERMES_MODEL not in candidates:
+        candidates.append(ACTIVE_HERMES_MODEL)
+        
+    # 4. Add all healthy failover models
+    for m in HEALTHY_FAILOVER_MODELS:
+        if m not in candidates:
+            candidates.append(m)
+            
+    # Prioritize active models not in cooldown
+    active = [m for m in candidates if MODEL_COOLDOWN_MAP.get(m, 0) < now]
+    cooled = [m for m in candidates if MODEL_COOLDOWN_MAP.get(m, 0) >= now]
+    return active + cooled
+
 FALLBACK_URLS = [
     UPSTREAM_URL,
     "http://127.0.0.1:8642/v1/chat/completions",
 ]
 
-async def stream_upstream(payload: dict):
-    """Stream raw SSE data lines from upstream with automatic fallback."""
+async def stream_upstream(payload: dict, requested_model: Optional[str] = None, chat_id: Optional[str] = None):
+    """Stream raw SSE data lines from upstream with automatic cascading model and endpoint fallback."""
     last_err = None
     urls_to_try = list(dict.fromkeys(FALLBACK_URLS))
+    candidate_models = get_candidate_models(requested_model or payload.get("model"), chat_id)
 
-    for url in urls_to_try:
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {UPSTREAM_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                ) as r:
-                    if r.status_code == 200:
-                        async for line in r.aiter_lines():
-                            line = line.strip()
-                            if line.startswith("data: "):
-                                yield line[6:]
-                            elif line == "data: [DONE]":
-                                yield "[DONE]"
-                        return
-                    else:
-                        last_err = f"HTTP {r.status_code} from {url}"
-        except Exception as e:
-            last_err = f"{url}: {e}"
-            continue
+    for model_name in candidate_models:
+        payload_copy = dict(payload)
+        payload_copy["model"] = model_name
+        model_succeeded = False
+
+        for url in urls_to_try:
+            try:
+                async with httpx.AsyncClient(timeout=45) as client:
+                    async with client.stream(
+                        "POST",
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {UPSTREAM_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload_copy,
+                    ) as r:
+                        if r.status_code == 200:
+                            has_yielded = False
+                            async for line in r.aiter_lines():
+                                line = line.strip()
+                                if line.startswith("data: "):
+                                    has_yielded = True
+                                    yield line[6:]
+                                elif line == "data: [DONE]":
+                                    has_yielded = True
+                                    yield "[DONE]"
+                            if has_yielded:
+                                model_succeeded = True
+                                return
+                        elif r.status_code == 429:
+                            MODEL_COOLDOWN_MAP[model_name] = time.time() + 60
+                            last_err = f"Model {model_name} rate limited (HTTP 429) from {url}"
+                            break
+                        else:
+                            last_err = f"HTTP {r.status_code} from {url} for model {model_name}"
+            except Exception as e:
+                last_err = f"{url} ({model_name}): {e}"
+                continue
+
+        if model_succeeded:
+            return
+        else:
+            MODEL_COOLDOWN_MAP[model_name] = time.time() + 60
 
     if last_err:
-        raise RuntimeError(f"All upstream endpoints failed. Last error: {last_err}")
+        raise RuntimeError(f"All upstream models and endpoints failed. Last error: {last_err}")
 
 
 async def assemble_upstream(payload: dict) -> tuple:

@@ -488,6 +488,8 @@ async def set_surface_model_state(org_id: str, surface: str, request: Request):
         body = {}
     model = body.get("model")
     thinking = body.get("thinking")
+    if model:
+        ab.set_active_model(model)
     for st in MODEL_SELECTOR_STATE_LIST:
         if st["id"] == surface:
             if model:
@@ -498,7 +500,7 @@ async def set_surface_model_state(org_id: str, surface: str, request: Request):
     new_st = {
         "id": surface,
         "surface": surface,
-        "model": model or "hermes-agent",
+        "model": model or "auto/coding:fast",
         "thinking": thinking or {"mode": "auto", "effort": "high"},
         "thinking_by_model": []
     }
@@ -671,6 +673,20 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
     try:
         await queue.put(ab.create_message_start(msg_id, model))
 
+        # Check if user sent a model configuration directive
+        model_switch_match = re.search(r'(?:^/model\s+|switch\s+(?:the\s+)?model\s+to\s+|set\s+(?:the\s+)?model\s+to\s+|use\s+(?:the\s+)?model\s+)([a-zA-Z0-9_\-\:\/\.]+)', prompt, re.IGNORECASE)
+        if model_switch_match:
+            new_model = model_switch_match.group(1).strip()
+            ab.set_active_model(new_model, chat_id=chat_id)
+            resp_text = f"Switched active model for this conversation to **`{new_model}`**. All subsequent responses will use this model with automatic failover."
+            await queue.put(ab.create_content_block_start(0))
+            await queue.put(ab.create_content_block_delta(resp_text, 0))
+            await queue.put(ab.create_content_block_stop(0))
+            await queue.put(ab.create_message_delta("end_turn"))
+            await queue.put(ab.create_message_stop())
+            full_text = resp_text
+            return
+
         system_instruction = (
             "You are Hermes, an intelligent and helpful AI assistant with live interactive Artifact support.\n\n"
             "# Artifacts Guidelines:\n"
@@ -712,12 +728,12 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
             openai_messages.append({"role": "user", "content": prompt or "Hello"})
 
         payload = {
-            "model": "auto/best-coding",
+            "model": model or "auto/coding:fast",
             "messages": openai_messages,
             "stream": True,
         }
 
-        async for data in ab.stream_upstream(payload):
+        async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
             data = data.strip()
             if not data or data == "[DONE]":
                 continue
