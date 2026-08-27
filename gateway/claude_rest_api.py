@@ -757,15 +757,18 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
         if text_active:
             await queue.put(ab.create_content_block_stop(0))
         else:
+            fallback_reply = "I'm here and ready to help! What would you like to work on today?"
             await queue.put(ab.create_content_block_start(0))
+            await queue.put(ab.create_content_block_delta(fallback_reply, 0))
             await queue.put(ab.create_content_block_stop(0))
+            full_text = fallback_reply
 
         await queue.put(ab.create_message_delta("end_turn"))
         await queue.put(ab.create_message_stop())
     except Exception as e:
         logger.error(f"Error in background agent execution for {chat_id}: {e}")
         if not text_active and not full_text:
-            err_text = "I'm here and ready to help. How can I assist you?"
+            err_text = "I'm ready to assist you. Please ask your question or send your request."
             await queue.put(ab.create_content_block_start(0))
             await queue.put(ab.create_content_block_delta(err_text, 0))
             await queue.put(ab.create_content_block_stop(0))

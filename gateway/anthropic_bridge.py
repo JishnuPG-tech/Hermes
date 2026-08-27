@@ -177,14 +177,15 @@ async def stream_upstream(payload: dict, requested_model: Optional[str] = None, 
     urls_to_try = list(dict.fromkeys(FALLBACK_URLS))
     candidate_models = get_candidate_models(requested_model or payload.get("model"), chat_id)
 
-    for model_name in candidate_models:
+    # Limit candidate attempts to the top 3 best models with a 6s stream connection timeout
+    for model_name in candidate_models[:3]:
         payload_copy = dict(payload)
         payload_copy["model"] = model_name
         model_succeeded = False
 
         for url in urls_to_try:
             try:
-                async with httpx.AsyncClient(timeout=45) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=12.0, write=5.0, pool=5.0)) as client:
                     async with client.stream(
                         "POST",
                         url,
@@ -200,7 +201,6 @@ async def stream_upstream(payload: dict, requested_model: Optional[str] = None, 
                                 line = line.strip()
                                 if line.startswith("data: "):
                                     data_content = line[6:]
-                                    # Filter out omniroute keepalive chunks from satisfying content yield
                                     try:
                                         chunk_obj = json.loads(data_content)
                                         if chunk_obj.get("id") == "omniroute-keepalive":
@@ -231,7 +231,7 @@ async def stream_upstream(payload: dict, requested_model: Optional[str] = None, 
             MODEL_COOLDOWN_MAP[model_name] = time.time() + 60
 
     if last_err:
-        raise RuntimeError(f"All upstream models and endpoints failed. Last error: {last_err}")
+        raise RuntimeError(f"All upstream models failed: {last_err}")
 
 
 async def assemble_upstream(payload: dict) -> tuple:
