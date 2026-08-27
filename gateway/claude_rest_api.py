@@ -85,7 +85,7 @@ async def _generate_ai_title_async(chat_id: str, first_prompt: str):
             if resp.status_code == 200:
                 data = resp.json()
                 t = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                t = re.sub(r'["'`\.\#\*\:\n\r]', '', t).strip()
+                t = "".join(c for c in t if c not in ('"', "'", "`", "#", "*", ":", "\n", "\r")).strip()
                 if t and len(t) >= 3 and len(t) <= 60:
                     if chat_id in _CONVERSATIONS:
                         _CONVERSATIONS[chat_id]["name"] = t
