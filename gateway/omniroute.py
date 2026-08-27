@@ -19,9 +19,10 @@ OMNIROUTE_EMBED_PORT = int(os.getenv("OMNIROUTE_EMBED_PORT", "20131"))
 
 MASTER_KEY = (
     os.getenv("OMNIROUTE_API_KEY")
+    or os.getenv("API_SERVER_KEY")
     or os.getenv("INITIAL_PASSWORD")
     or os.getenv("API_KEY_SECRET")
-    or "sk-6646a5f2024f6318-d27ff7-f3e152c8"
+    or "sk-2e556e0437ee2958-7baf2d-b4133935"
 )
 
 # Referer paths that indicate a dashboard-originating request
