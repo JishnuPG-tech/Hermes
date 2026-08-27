@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request, Header, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, PlainTextResponse
 from gateway import anthropic_bridge as ab
 from gateway import channels_manager as cm
+from gateway import agent_executor as ae
 
 logger = logging.getLogger("claude_rest_api")
 router = APIRouter()
@@ -1162,10 +1163,6 @@ _ACTIVE_RUNS = {}
 async def _execute_agent_background(chat_id: str, prompt: str, messages: list, model: str, msg_id: str, queue: asyncio.Queue):
     """Autonomous agent runner that executes to completion in the background regardless of client connection."""
     full_text = ""
-    full_thinking = ""
-    thinking_active = False
-    text_active = False
-    
     try:
         await queue.put(ab.create_message_start(msg_id, model))
 
@@ -1183,90 +1180,8 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
             full_text = resp_text
             return
 
-        system_instruction = (
-            "You are Hermes, an intelligent and helpful AI assistant with live interactive Artifact support.\n\n"
-            "# Artifacts Guidelines:\n"
-            "When asked to generate complete, substantial, or self-contained content such as documents, markdown files, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag so it renders as an interactive artifact card in the application:\n"
-            "<antArtifact identifier=\"unique-id\" type=\"application/vnd.ant.markdown\" title=\"Title\">\n"
-            "... content ...\n"
-            "</antArtifact>\n\n"
-            "Supported artifact types:\n"
-            "- `application/vnd.ant.markdown`: For Markdown (.md) documents, articles, summaries, guides, notes.\n"
-            "- `text/html`: For complete HTML/CSS/JavaScript web pages and interactive UI applications (.html).\n"
-            "- `image/svg+xml`: For standalone vector graphics and diagrams (.svg).\n"
-            "- `application/vnd.ant.code` (with `language=\"python\" | \"javascript\" | \"json\" | ...`): For standalone source code files.\n"
-            "- `application/vnd.ant.mermaid`: For mermaid flowcharts and diagrams.\n\n"
-            "Place your conversational greeting or summary outside the `<antArtifact>` tag, and put the full document or code content inside the `<antArtifact>` tag."
-        )
-        openai_messages = [{"role": "system", "content": system_instruction}]
-
-        for m in messages:
-            role = m.get("role") or m.get("sender") or "user"
-            if role in ["human", "user"]:
-                r = "user"
-            elif role in ["assistant", "ai"]:
-                r = "assistant"
-            elif role == "system":
-                r = "system"
-            else:
-                r = "user"
-
-            txt = m.get("content") or m.get("text") or ""
-            if isinstance(txt, list):
-                txt = "".join(
-                    cb.get("text", "") for cb in txt if isinstance(cb, dict) and cb.get("type") == "text"
-                )
-            txt_str = str(txt).strip()
-            if txt_str:
-                openai_messages.append({"role": r, "content": txt_str})
-
-        if not any(m["role"] == "user" for m in openai_messages):
-            openai_messages.append({"role": "user", "content": prompt or "Hello"})
-
-        payload = {
-            "model": model or "auto/smart",
-            "messages": openai_messages,
-            "stream": True,
-        }
-
-        async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
-            data = data.strip()
-            if not data:
-                continue
-            if data == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data)
-            except Exception:
-                continue
-
-            delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
-            text_delta = delta.get("content", "")
-            if not text_delta:
-                text_delta = chunk.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
-
-            if text_delta:
-                if not text_active:
-                    await queue.put(ab.create_content_block_start(0))
-                    text_active = True
-                full_text += text_delta
-                await queue.put(ab.create_content_block_delta(text_delta, 0))
-
-            finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
-            if finish_reason in ("stop", "end_turn", "length", "tool_calls"):
-                break
-
-        if text_active:
-            await queue.put(ab.create_content_block_stop(0))
-        else:
-            fallback_reply = "I'm here and ready to help! What would you like to work on today?"
-            await queue.put(ab.create_content_block_start(0))
-            await queue.put(ab.create_content_block_delta(fallback_reply, 0))
-            await queue.put(ab.create_content_block_stop(0))
-            full_text = fallback_reply
-
-        await queue.put(ab.create_message_delta("end_turn"))
-        await queue.put(ab.create_message_stop())
+        # Autonomous Agent Loop with tools, skills, bash, and server file control
+        full_text = await ae.run_autonomous_agent(chat_id, prompt, messages, model, msg_id, queue)
     except Exception as e:
         logger.error(f"Error in background agent execution for {chat_id}: {e}")
         if not text_active and not full_text:
@@ -2576,6 +2491,7 @@ async def add_custom_model_api(request: Request):
 
 # 11. Channels & Social Media Management (Telegram, Gmail, Discord, Webhooks)
 from gateway import channels_manager as cm
+from gateway import agent_executor as ae
 
 _CHANNELS_HTML = r"""<!DOCTYPE html>
 <html lang="en">
