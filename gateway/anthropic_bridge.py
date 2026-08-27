@@ -199,19 +199,36 @@ async def stream_upstream(payload: dict, requested_model: Optional[str] = None, 
                             has_yielded = False
                             async for line in r.aiter_lines():
                                 line = line.strip()
+                                if not line:
+                                    continue
+                                if line == "data: [DONE]" or line == "[DONE]":
+                                    if has_yielded:
+                                        yield "[DONE]"
+                                        model_succeeded = True
+                                        return
+                                    break
                                 if line.startswith("data: "):
-                                    data_content = line[6:]
+                                    data_content = line[6:].strip()
+                                    if data_content == "[DONE]":
+                                        if has_yielded:
+                                            yield "[DONE]"
+                                            model_succeeded = True
+                                            return
+                                        break
                                     try:
                                         chunk_obj = json.loads(data_content)
                                         if chunk_obj.get("id") == "omniroute-keepalive":
                                             continue
+                                        finish_reason = chunk_obj.get("choices", [{}])[0].get("finish_reason")
+                                        has_yielded = True
+                                        yield data_content
+                                        if finish_reason in ("stop", "end_turn", "length", "tool_calls"):
+                                            yield "[DONE]"
+                                            model_succeeded = True
+                                            return
                                     except Exception:
-                                        pass
-                                    has_yielded = True
-                                    yield data_content
-                                elif line == "data: [DONE]":
-                                    if has_yielded:
-                                        yield "[DONE]"
+                                        has_yielded = True
+                                        yield data_content
                             if has_yielded:
                                 model_succeeded = True
                                 return

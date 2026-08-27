@@ -735,8 +735,10 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
 
         async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
             data = data.strip()
-            if not data or data == "[DONE]":
+            if not data:
                 continue
+            if data == "[DONE]":
+                break
             try:
                 chunk = json.loads(data)
             except Exception:
@@ -753,6 +755,10 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
                     text_active = True
                 full_text += text_delta
                 await queue.put(ab.create_content_block_delta(text_delta, 0))
+
+            finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+            if finish_reason in ("stop", "end_turn", "length", "tool_calls"):
+                break
 
         if text_active:
             await queue.put(ab.create_content_block_stop(0))
