@@ -728,7 +728,7 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
             openai_messages.append({"role": "user", "content": prompt or "Hello"})
 
         payload = {
-            "model": model or "antigravity/gemini-3.6-flash-low",
+            "model": model or "auto/best-coding",
             "messages": openai_messages,
             "stream": True,
         }
