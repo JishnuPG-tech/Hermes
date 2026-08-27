@@ -1084,11 +1084,33 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
 _UPLOADED_FILES: Dict[str, Dict[str, Any]] = {}
 
 def _find_artifact_across_all(art_id: str):
+    # 1. Direct lookup in _PUBLISHED_ARTIFACTS
+    if art_id in _PUBLISHED_ARTIFACTS:
+        p = _PUBLISHED_ARTIFACTS[art_id]
+        return p.get("chat_conversation_uuid"), p
+
+    # 2. Check if art_id is a conversation UUID (chat_id)
+    if art_id in _CONVERSATIONS:
+        arts = _extract_artifacts_from_conv(art_id)
+        if arts:
+            return art_id, arts[-1]
+
+    # 3. Check across all conversations for artifact ID, version UUID, or message UUID
     for cid, conv in _CONVERSATIONS.items():
         arts = _extract_artifacts_from_conv(cid)
         for a in arts:
-            if a.get("id") == art_id or a.get("identifier") == art_id or a.get("uuid") == art_id or a.get("artifact_uuid") == art_id:
+            if (a.get("id") == art_id or a.get("identifier") == art_id or 
+                a.get("uuid") == art_id or a.get("artifact_uuid") == art_id or 
+                a.get("version_uuid") == art_id or a.get("message_uuid") == art_id):
                 return cid, a
+                
+    # 4. Check if any artifact in any conversation has a matching prefix
+    for cid, conv in _CONVERSATIONS.items():
+        arts = _extract_artifacts_from_conv(cid)
+        for a in arts:
+            if art_id in a.get("id", "") or art_id in a.get("uuid", ""):
+                return cid, a
+
     return None, None
 
 def _create_version_record(art: Optional[Dict[str, Any]], artifact_id: str, chat_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1311,13 +1333,22 @@ async def get_public_artifact_endpoint(artifact_id: str, request: Request, versi
     
     accept = request.headers.get("accept", "")
     if "text/html" in accept and "application/json" not in accept:
+        title = pub.get("title", "Document")
+        content = pub.get("content", "")
+        art_type = pub.get("artifact_type") or pub.get("type") or "application/vnd.ant.markdown"
+        lang = pub.get("code_language") or pub.get("language") or ""
+        initial_json = json.dumps({"title": title, "content": content, "type": art_type, "language": lang, "id": artifact_id})
+        rendered_html = _SANDBOX_HTML.replace(
+            "/*__INITIAL_DATA_PLACEHOLDER__*/",
+            f"window.__INITIAL_DATA__ = {initial_json};\ntry {{ renderContent(window.__INITIAL_DATA__); }} catch(e) {{}}"
+        )
         headers = {
             "Content-Type": "text/html; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
             "Content-Security-Policy": "frame-ancestors *",
             "Cache-Control": "no-cache"
         }
-        return HTMLResponse(content=_SANDBOX_HTML, headers=headers)
+        return HTMLResponse(content=rendered_html, headers=headers)
     
     res = dict(pub)
     res["artifact_versions"] = [pub]
@@ -1568,6 +1599,8 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
         window.renderContent = renderContent;
         window.setArtifactContent = renderContent;
 
+        /*__INITIAL_DATA_PLACEHOLDER__*/
+
         // Check query string ?content=...
         try {
             var params = new URLSearchParams(window.location.search);
@@ -1638,6 +1671,28 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
 @router.get("/artifacts/sandbox", response_class=HTMLResponse)
 @router.get("/sandbox", response_class=HTMLResponse)
 async def get_sandbox_frame(request: Request, frame_id: Optional[str] = None, artifact_id: Optional[str] = None, runtime_id: Optional[str] = None):
+    lookup_id = artifact_id or frame_id or runtime_id
+    pub = None
+    if lookup_id:
+        pub = _PUBLISHED_ARTIFACTS.get(lookup_id)
+        if not pub:
+            cid, art = _find_artifact_across_all(lookup_id)
+            if art:
+                pub = _create_version_record(art, lookup_id, chat_id=cid)
+    
+    if pub:
+        title = pub.get("title", "Document")
+        content = pub.get("content", "")
+        art_type = pub.get("artifact_type") or pub.get("type") or "application/vnd.ant.markdown"
+        lang = pub.get("code_language") or pub.get("language") or ""
+        initial_json = json.dumps({"title": title, "content": content, "type": art_type, "language": lang, "id": lookup_id})
+        rendered_html = _SANDBOX_HTML.replace(
+            "/*__INITIAL_DATA_PLACEHOLDER__*/",
+            f"window.__INITIAL_DATA__ = {initial_json};\ntry {{ renderContent(window.__INITIAL_DATA__); }} catch(e) {{}}"
+        )
+    else:
+        rendered_html = _SANDBOX_HTML
+
     headers = {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
@@ -1648,7 +1703,7 @@ async def get_sandbox_frame(request: Request, frame_id: Optional[str] = None, ar
         "Pragma": "no-cache",
         "Expires": "0"
     }
-    return HTMLResponse(content=_SANDBOX_HTML, headers=headers)
+    return HTMLResponse(content=rendered_html, headers=headers)
 
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/files")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/files")
@@ -1716,6 +1771,418 @@ async def feature_flags(org_id: str):
             "model_selector_enabled": True
         }
     }
-# Model selector config fix 08/25/2026 15:48:46
+
+# 10. External Model Settings UI & Management API
+_SETTINGS_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude APK & Hermes - Model Settings</title>
+    <style>
+        :root {
+            --bg-main: #141416;
+            --bg-card: #1e1f23;
+            --bg-card-hover: #26282e;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --accent-orange: #d97706;
+            --accent-green: #10b981;
+            --accent-blue: #3b82f6;
+            --border: #2e3038;
+            --border-active: #d97706;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 24px 16px;
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 780px;
+            width: 100%;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 28px;
+        }
+        .header h1 {
+            font-size: 24px;
+            margin: 0 0 8px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+            margin: 0;
+        }
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.2s ease;
+        }
+        .card.active {
+            border-color: var(--accent-orange);
+            box-shadow: 0 0 0 1px var(--accent-orange);
+        }
+        .card-info {
+            flex: 1;
+            margin-right: 16px;
+        }
+        .card-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .badge {
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+        .badge-active { background-color: rgba(217, 119, 6, 0.2); color: #f59e0b; }
+        .badge-fast { background-color: rgba(16, 185, 129, 0.2); color: #34d399; }
+        .badge-pro { background-color: rgba(139, 92, 246, 0.2); color: #a78bfa; }
+        .badge-smart { background-color: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        .badge-groq { background-color: rgba(249, 115, 22, 0.2); color: #fb923c; }
+        .badge-think { background-color: rgba(236, 72, 153, 0.2); color: #f472b6; }
+        .badge-custom { background-color: rgba(107, 114, 128, 0.2); color: #9ca3af; }
+        .card-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+        .card-id {
+            font-family: ui-monospace, monospace;
+            font-size: 12px;
+            color: #71717a;
+        }
+        .card-actions {
+            display: flex;
+            gap: 8px;
+        }
+        button {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background-color: #27272a;
+            color: var(--text-primary);
+            transition: all 0.15s ease;
+        }
+        button:hover {
+            background-color: #3f3f46;
+        }
+        button.btn-primary {
+            background-color: var(--accent-orange);
+            border-color: var(--accent-orange);
+            color: #fff;
+        }
+        button.btn-primary:hover {
+            background-color: #b45309;
+        }
+        .form-card {
+            background-color: var(--bg-card);
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 24px;
+        }
+        .form-card h2 {
+            font-size: 16px;
+            margin: 0 0 12px 0;
+        }
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+        .input-group label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        input {
+            background-color: #141416;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus {
+            border-color: var(--accent-orange);
+        }
+        .status-banner {
+            display: none;
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            margin-bottom: 16px;
+        }
+        .status-banner.success { display: block; background-color: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .status-banner.error { display: block; background-color: rgba(239, 68, 68, 0.15); color: #f87171; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>⚙️ Claude APK & Hermes - Model Settings</h1>
+            <p>Select your active reasoning model or add custom LLM endpoints for your Claude APK and web clients.</p>
+        </div>
+        <div id="statusBanner" class="status-banner"></div>
+        <div id="modelList"></div>
+
+        <div class="form-card">
+            <h2>➕ Add Custom Model to Claude APK Selector</h2>
+            <div class="input-group">
+                <label>Model Display Name</label>
+                <input id="newModelName" type="text" placeholder="e.g. DeepSeek R1 Distill 70B">
+            </div>
+            <div class="input-group">
+                <label>Model ID / OmniRoute Route Path</label>
+                <input id="newModelId" type="text" placeholder="e.g. groq/deepseek-r1-distill-llama-70b">
+            </div>
+            <div class="input-group">
+                <label>Description</label>
+                <input id="newModelDesc" type="text" placeholder="e.g. High speed reasoning model">
+            </div>
+            <div class="input-group">
+                <label>Badge Text</label>
+                <input id="newModelBadge" type="text" placeholder="e.g. REASONING">
+            </div>
+            <button class="btn-primary" onclick="addCustomModel()" style="width: 100%; margin-top: 8px;">Add Model to Catalog</button>
+        </div>
+    </div>
+
+    <script>
+        var currentActiveModel = 'auto/smart';
+
+        function showStatus(msg, isSuccess) {
+            var b = document.getElementById('statusBanner');
+            b.className = 'status-banner ' + (isSuccess ? 'success' : 'error');
+            b.innerText = msg;
+            setTimeout(function() { b.style.display = 'none'; }, 4000);
+        }
+
+        async function loadModels() {
+            try {
+                var res = await fetch('/api/bootstrap/org_0123456789abcdef/app_start');
+                var data = await res.json();
+                var models = data.model_selector_config[0].models;
+                
+                var stateRes = await fetch('/api/organizations/org_0123456789abcdef/model_selector_state/chat');
+                var stateData = await stateRes.json();
+                currentActiveModel = stateData.model || 'auto/smart';
+
+                var container = document.getElementById('modelList');
+                container.innerHTML = '';
+
+                models.forEach(function(m) {
+                    var isCurrent = (m.id === currentActiveModel || m.model === currentActiveModel);
+                    var card = document.createElement('div');
+                    card.className = 'card ' + (isCurrent ? 'active' : '');
+
+                    var badgeText = m.badge && m.badge.message ? (m.badge.message.english || m.badge.message) : '';
+                    var badgeClass = 'badge-custom';
+                    if (badgeText.toUpperCase() === 'FAST') badgeClass = 'badge-fast';
+                    if (badgeText.toUpperCase() === 'PRO') badgeClass = 'badge-pro';
+                    if (badgeText.toUpperCase() === 'SMART') badgeClass = 'badge-smart';
+                    if (badgeText.toUpperCase() === 'GROQ') badgeClass = 'badge-groq';
+                    if (badgeText.toUpperCase() === 'THINK') badgeClass = 'badge-think';
+
+                    var desc = (m.description && m.description.english) ? m.description.english : ((m.description && m.description.text) ? m.description.text : '');
+
+                    card.innerHTML = `
+                        <div class="card-info">
+                            <div class="card-title-row">
+                                <span class="card-title">${m.name}</span>
+                                ${isCurrent ? '<span class="badge badge-active">ACTIVE</span>' : ''}
+                                ${badgeText ? `<span class="badge ${badgeClass}">${badgeText}</span>` : ''}
+                            </div>
+                            <div class="card-desc">${desc}</div>
+                            <div class="card-id">ID: ${m.id}</div>
+                        </div>
+                        <div class="card-actions">
+                            <button class="${isCurrent ? '' : 'btn-primary'}" onclick="selectModel('${m.id}')">${isCurrent ? 'Selected' : 'Activate'}</button>
+                            <button onclick="testModel('${m.id}', this)">Test</button>
+                        </div>
+                    `;
+                    container.appendChild(card);
+                });
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function selectModel(modelId) {
+            try {
+                var res = await fetch('/api/organizations/org_0123456789abcdef/model_selector_state/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({model: modelId})
+                });
+                if (res.ok) {
+                    showStatus('Active model switched to ' + modelId, true);
+                    loadModels();
+                } else {
+                    showStatus('Failed to switch model', false);
+                }
+            } catch(e) {
+                showStatus('Error switching model: ' + e.message, false);
+            }
+        }
+
+        async function testModel(modelId, btn) {
+            btn.innerText = 'Testing...';
+            btn.disabled = true;
+            var t0 = Date.now();
+            try {
+                var res = await fetch('/api/organizations/org_0123456789abcdef/chat_conversations/test-temp-ping/completion', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({prompt: 'Say OK', model: modelId})
+                });
+                var dur = Date.now() - t0;
+                btn.innerText = dur + 'ms ✓';
+                btn.style.color = '#34d399';
+            } catch(e) {
+                btn.innerText = 'Error ✗';
+                btn.style.color = '#f87171';
+            }
+            setTimeout(function() { btn.innerText = 'Test'; btn.style.color = ''; btn.disabled = false; }, 3000);
+        }
+
+        async function addCustomModel() {
+            var name = document.getElementById('newModelName').value.trim();
+            var id = document.getElementById('newModelId').value.trim();
+            var desc = document.getElementById('newModelDesc').value.trim() || 'Custom external model';
+            var badge = document.getElementById('newModelBadge').value.trim() || 'CUSTOM';
+
+            if (!name || !id) {
+                showStatus('Name and Model ID are required', false);
+                return;
+            }
+
+            try {
+                var res = await fetch('/api/settings/models/add', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: name, id: id, description: desc, badge: badge})
+                });
+                if (res.ok) {
+                    showStatus('Added ' + name + ' to Claude model catalog!', true);
+                    document.getElementById('newModelName').value = '';
+                    document.getElementById('newModelId').value = '';
+                    document.getElementById('newModelDesc').value = '';
+                    document.getElementById('newModelBadge').value = '';
+                    loadModels();
+                } else {
+                    showStatus('Failed to add model', false);
+                }
+            } catch(e) {
+                showStatus('Error adding model: ' + e.message, false);
+            }
+        }
+
+        loadModels();
+    </script>
+</body>
+</html>"""
+
+@router.get("/settings/models", response_class=HTMLResponse)
+@router.get("/api/settings/models", response_class=HTMLResponse)
+@router.get("/hermes/settings/models", response_class=HTMLResponse)
+@router.get("/hermes/models/settings", response_class=HTMLResponse)
+async def get_settings_models_ui():
+    headers = {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache"}
+    return HTMLResponse(content=_SETTINGS_HTML, headers=headers)
+
+@router.post("/api/settings/models/add")
+@router.post("/hermes/api/settings/models/add")
+async def add_custom_model_api(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    m_name = body.get("name") or "Custom Model"
+    m_id = body.get("id") or "custom/model"
+    m_desc = body.get("description") or "Custom AI Model"
+    m_badge = body.get("badge") or "CUSTOM"
+
+    new_cat_entry = {
+        "model": m_id,
+        "id": m_id,
+        "name": m_name,
+        "display_name": m_name,
+        "short_name": m_name,
+        "description": {"text": m_desc},
+        "description_i18n_key": None,
+        "overflow": None,
+        "inactive": False,
+        "thinking_modes": [],
+        "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
+        "notice_text": None,
+        "notice_text_i18n_key": None,
+        "knowledgeCutoff": "2026-01-01",
+        "slow_kb_warning_threshold": None,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "type": "model"
+    }
+
+    new_selector_entry = {
+        "id": m_id,
+        "model": m_id,
+        "name": m_name,
+        "short_name": m_name,
+        "voice_model": None,
+        "description": {"english": m_desc},
+        "notice": None,
+        "selection_notice": None,
+        "section": "main",
+        "disabled": False,
+        "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
+        "thinking": DEFAULT_THINKING_OPTIONS,
+        "badge": {"message": {"english": m_badge}}
+    }
+
+    # Add to catalog if not already present
+    if not any(m.get("id") == m_id for m in MODELS_CATALOG):
+        MODELS_CATALOG.append(new_cat_entry)
+    
+    # Add to selector config
+    for grp in MODEL_SELECTOR_CONFIG_LIST:
+        if grp.get("id") == "chat":
+            if not any(m.get("id") == m_id for m in grp.get("models", [])):
+                grp["models"].append(new_selector_entry)
+
+    # Register in healthy failovers
+    if m_id not in ab.HEALTHY_FAILOVER_MODELS:
+        ab.HEALTHY_FAILOVER_MODELS.append(m_id)
+
+    return {"status": "ok", "model": m_id, "total_models": len(MODELS_CATALOG)}
 
 
