@@ -138,22 +138,35 @@ def set_active_model(model_name: str, chat_id: Optional[str] = None):
     else:
         ACTIVE_HERMES_MODEL = model_name
 
+MODEL_ALIAS_MAP = {
+    "claude-3-5-sonnet-20241022": "auto/smart",
+    "claude-3-5-haiku-20241022": "auto/best-fast",
+    "claude-3-opus-20240229": "auto/best-coding",
+    "hermes-agent": "auto/smart",
+    "default": "auto/smart"
+}
+
 def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optional[str] = None) -> List[str]:
     candidates = []
     now = time.time()
     
     # 1. Check conversation-specific override
     if chat_id and chat_id in CONVERSATION_MODEL_MAP:
-        candidates.append(CONVERSATION_MODEL_MAP[chat_id])
+        conv_m = CONVERSATION_MODEL_MAP[chat_id]
+        mapped = MODEL_ALIAS_MAP.get(conv_m, conv_m)
+        if mapped not in candidates:
+            candidates.append(mapped)
     
     # 2. Check requested model
-    if requested_model and requested_model not in ["hermes-agent", "claude-3-5-sonnet-20241022", "default"]:
-        if requested_model not in candidates:
-            candidates.append(requested_model)
+    if requested_model:
+        mapped_req = MODEL_ALIAS_MAP.get(requested_model, requested_model)
+        if mapped_req not in candidates:
+            candidates.append(mapped_req)
             
     # 3. Add global active model
-    if ACTIVE_HERMES_MODEL not in candidates:
-        candidates.append(ACTIVE_HERMES_MODEL)
+    mapped_active = MODEL_ALIAS_MAP.get(ACTIVE_HERMES_MODEL, ACTIVE_HERMES_MODEL)
+    if mapped_active not in candidates:
+        candidates.append(mapped_active)
         
     # 4. Add all healthy failover models
     for m in HEALTHY_FAILOVER_MODELS:

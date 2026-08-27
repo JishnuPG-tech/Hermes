@@ -64,6 +64,7 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
                 if isinstance(cb, dict) and cb.get("type") == "text":
                     full_body += "\n" + cb.get("text", "")
         
+        # 1. Parse explicit <antArtifact> tags
         for match in re.finditer(r'<antArtifact\s+([^>]+)>([\s\S]*?)(?:</antArtifact>|$)', full_body):
             attrs_str = match.group(1)
             content_str = match.group(2).strip()
@@ -71,19 +72,62 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
             art_id = attrs.get("identifier") or attrs.get("id") or str(uuid.uuid4())
             if art_id not in seen_ids:
                 seen_ids.add(art_id)
+                art_type = attrs.get("type") or attrs.get("artifactType") or "application/vnd.ant.markdown"
                 artifacts.append({
                     "id": art_id,
                     "uuid": art_id,
+                    "artifact_uuid": art_id,
                     "version_uuid": str(uuid.uuid4()),
+                    "message_uuid": msg.get("uuid", str(uuid.uuid4())),
+                    "chat_conversation_uuid": chat_id,
                     "identifier": art_id,
-                    "type": attrs.get("type", "application/vnd.ant.markdown"),
+                    "type": art_type,
+                    "artifact_type": art_type,
                     "title": attrs.get("title", "Document"),
                     "language": attrs.get("language", ""),
+                    "code_language": attrs.get("language", ""),
                     "content": content_str,
+                    "result_state": "complete",
+                    "source": "c",
+                    "visibility": "private",
                     "is_complete": True,
                     "created_at": msg.get("created_at"),
                     "updated_at": msg.get("updated_at")
                 })
+
+        # 2. Synthesize artifacts for standalone HTML / SVG / Markdown blocks if not already wrapped
+        if not artifacts:
+            for match in re.finditer(r'```([a-zA-Z0-9_-]+)?\s*\n([\s\S]{120,})?```', full_body):
+                lang = (match.group(1) or "").lower()
+                code = (match.group(2) or "").strip()
+                if lang in ("html", "svg", "markdown", "md") or len(code) > 200:
+                    art_id = f"art_{hash(code[:50]) & 0xffffffff:08x}"
+                    if art_id not in seen_ids:
+                        seen_ids.add(art_id)
+                        art_type = "text/html" if lang == "html" else ("image/svg+xml" if lang == "svg" else "application/vnd.ant.markdown")
+                        title = "Preview" if lang in ("html", "svg") else "Document"
+                        artifacts.append({
+                            "id": art_id,
+                            "uuid": art_id,
+                            "artifact_uuid": art_id,
+                            "version_uuid": str(uuid.uuid4()),
+                            "message_uuid": msg.get("uuid", str(uuid.uuid4())),
+                            "chat_conversation_uuid": chat_id,
+                            "identifier": art_id,
+                            "type": art_type,
+                            "artifact_type": art_type,
+                            "title": title,
+                            "language": lang,
+                            "code_language": lang,
+                            "content": code,
+                            "result_state": "complete",
+                            "source": "c",
+                            "visibility": "private",
+                            "is_complete": True,
+                            "created_at": msg.get("created_at"),
+                            "updated_at": msg.get("updated_at")
+                        })
+
     return artifacts
 
 def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
@@ -112,10 +156,10 @@ MODELS_CATALOG = [
     {
         "model": "claude-3-5-sonnet-20241022",
         "id": "claude-3-5-sonnet-20241022",
-        "name": "Sonnet 5",
-        "display_name": "Sonnet 5",
-        "short_name": "Sonnet 5 Low",
-        "description": {"text": "Most efficient for everyday tasks"},
+        "name": "Sonnet 3.7",
+        "display_name": "Sonnet 3.7",
+        "short_name": "Sonnet 3.7",
+        "description": {"text": "Most intelligent model for reasoning and coding"},
         "description_i18n_key": None,
         "overflow": None,
         "inactive": False,
@@ -128,7 +172,7 @@ MODELS_CATALOG = [
         },
         "notice_text": None,
         "notice_text_i18n_key": None,
-        "knowledgeCutoff": "2024-10-22",
+        "knowledgeCutoff": "2025-02-01",
         "slow_kb_warning_threshold": None,
         "created_at": "2024-10-22T00:00:00Z",
         "type": "model"
@@ -136,10 +180,10 @@ MODELS_CATALOG = [
     {
         "model": "claude-3-5-haiku-20241022",
         "id": "claude-3-5-haiku-20241022",
-        "name": "Haiku 4.5",
-        "display_name": "Haiku 4.5",
-        "short_name": "Haiku 4.5",
-        "description": {"text": "Fastest for quick answers"},
+        "name": "Haiku 3.5",
+        "display_name": "Haiku 3.5",
+        "short_name": "Haiku 3.5",
+        "description": {"text": "Fastest response time for everyday tasks"},
         "description_i18n_key": None,
         "overflow": None,
         "inactive": False,
@@ -158,36 +202,12 @@ MODELS_CATALOG = [
         "type": "model"
     },
     {
-        "model": "claude-3-opus-20240229",
-        "id": "claude-3-opus-20240229",
-        "name": "Opus 5",
-        "display_name": "Opus 5",
-        "short_name": "Opus 5",
-        "description": {"text": "For complex tasks"},
-        "description_i18n_key": None,
-        "overflow": None,
-        "inactive": False,
-        "thinking_modes": [],
-        "capabilities": {
-            "mm_images": True,
-            "mm_pdf": True,
-            "web_search": True,
-            "code_execution": True
-        },
-        "notice_text": None,
-        "notice_text_i18n_key": None,
-        "knowledgeCutoff": "2024-02-29",
-        "slow_kb_warning_threshold": None,
-        "created_at": "2024-02-29T00:00:00Z",
-        "type": "model"
-    },
-    {
-        "model": "hermes-agent",
-        "id": "hermes-agent",
-        "name": "Fable 5",
-        "display_name": "Fable 5",
-        "short_name": "Fable 5",
-        "description": {"text": "For your toughest challenges"},
+        "model": "auto/smart",
+        "id": "auto/smart",
+        "name": "Hermes Smart",
+        "display_name": "Hermes Smart",
+        "short_name": "Smart",
+        "description": {"text": "Autonomous load balancing and intelligent model routing"},
         "description_i18n_key": None,
         "overflow": None,
         "inactive": False,
@@ -203,6 +223,102 @@ MODELS_CATALOG = [
         "knowledgeCutoff": "2026-01-01",
         "slow_kb_warning_threshold": None,
         "created_at": "2026-01-01T00:00:00Z",
+        "type": "model"
+    },
+    {
+        "model": "auto/best-coding",
+        "id": "auto/best-coding",
+        "name": "Hermes Coding Pro",
+        "display_name": "Hermes Coding Pro",
+        "short_name": "Coding Pro",
+        "description": {"text": "Optimized for programming, debugging, and architectures"},
+        "description_i18n_key": None,
+        "overflow": None,
+        "inactive": False,
+        "thinking_modes": [],
+        "capabilities": {
+            "mm_images": True,
+            "mm_pdf": True,
+            "web_search": True,
+            "code_execution": True
+        },
+        "notice_text": None,
+        "notice_text_i18n_key": None,
+        "knowledgeCutoff": "2026-01-01",
+        "slow_kb_warning_threshold": None,
+        "created_at": "2026-01-01T00:00:00Z",
+        "type": "model"
+    },
+    {
+        "model": "auto/best-fast",
+        "id": "auto/best-fast",
+        "name": "Hermes Turbo",
+        "display_name": "Hermes Turbo",
+        "short_name": "Turbo",
+        "description": {"text": "Ultra-low latency streaming for rapid dialogue"},
+        "description_i18n_key": None,
+        "overflow": None,
+        "inactive": False,
+        "thinking_modes": [],
+        "capabilities": {
+            "mm_images": True,
+            "mm_pdf": True,
+            "web_search": True,
+            "code_execution": True
+        },
+        "notice_text": None,
+        "notice_text_i18n_key": None,
+        "knowledgeCutoff": "2026-01-01",
+        "slow_kb_warning_threshold": None,
+        "created_at": "2026-01-01T00:00:00Z",
+        "type": "model"
+    },
+    {
+        "model": "groq/llama-3.3-70b-versatile",
+        "id": "groq/llama-3.3-70b-versatile",
+        "name": "Llama 3.3 70B",
+        "display_name": "Llama 3.3 70B",
+        "short_name": "Llama 3.3",
+        "description": {"text": "Open-weights intelligence hosted on Groq high-speed LPU"},
+        "description_i18n_key": None,
+        "overflow": None,
+        "inactive": False,
+        "thinking_modes": [],
+        "capabilities": {
+            "mm_images": True,
+            "mm_pdf": True,
+            "web_search": True,
+            "code_execution": True
+        },
+        "notice_text": None,
+        "notice_text_i18n_key": None,
+        "knowledgeCutoff": "2025-01-01",
+        "slow_kb_warning_threshold": None,
+        "created_at": "2025-01-01T00:00:00Z",
+        "type": "model"
+    },
+    {
+        "model": "antigravity/gemini-2.5-flash-thinking",
+        "id": "antigravity/gemini-2.5-flash-thinking",
+        "name": "Gemini 2.5 Thinking",
+        "display_name": "Gemini 2.5 Thinking",
+        "short_name": "Gemini Thinking",
+        "description": {"text": "Extended chain-of-thought with reasoning tokens"},
+        "description_i18n_key": None,
+        "overflow": None,
+        "inactive": False,
+        "thinking_modes": [],
+        "capabilities": {
+            "mm_images": True,
+            "mm_pdf": True,
+            "web_search": True,
+            "code_execution": True
+        },
+        "notice_text": None,
+        "notice_text_i18n_key": None,
+        "knowledgeCutoff": "2025-05-01",
+        "slow_kb_warning_threshold": None,
+        "created_at": "2025-05-01T00:00:00Z",
         "type": "model"
     }
 ]
@@ -228,10 +344,10 @@ MODEL_SELECTOR_CONFIG_LIST = [
         "models": [
             {
                 "id": "claude-3-5-sonnet-20241022",
-                "name": "Sonnet 5",
-                "short_name": "Sonnet 5 Low",
+                "name": "Sonnet 3.7",
+                "short_name": "Sonnet 3.7",
                 "voice_model": None,
-                "description": {"english": "Most efficient for everyday tasks"},
+                "description": {"english": "Most intelligent model for reasoning and coding"},
                 "notice": None,
                 "selection_notice": None,
                 "section": "main",
@@ -242,45 +358,87 @@ MODEL_SELECTOR_CONFIG_LIST = [
             },
             {
                 "id": "claude-3-5-haiku-20241022",
-                "name": "Haiku 4.5",
-                "short_name": "Haiku 4.5",
+                "name": "Haiku 3.5",
+                "short_name": "Haiku 3.5",
                 "voice_model": None,
-                "description": {"english": "Fastest for quick answers"},
+                "description": {"english": "Fastest response time for everyday tasks"},
                 "notice": None,
                 "selection_notice": None,
                 "section": "main",
                 "disabled": False,
                 "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
                 "thinking": DEFAULT_THINKING_OPTIONS,
-                "badge": None
+                "badge": {"message": {"english": "FAST"}}
             },
             {
-                "id": "claude-3-opus-20240229",
-                "name": "Opus 5",
-                "short_name": "Opus 5",
+                "id": "auto/smart",
+                "name": "Hermes Smart",
+                "short_name": "Hermes Smart",
                 "voice_model": None,
-                "description": {"english": "For complex tasks"},
+                "description": {"english": "Autonomous load balancing and intelligent model routing"},
                 "notice": None,
                 "selection_notice": None,
                 "section": "main",
                 "disabled": False,
                 "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
                 "thinking": DEFAULT_THINKING_OPTIONS,
-                "badge": {"message": {"english": "Pro"}}
+                "badge": {"message": {"english": "SMART"}}
             },
             {
-                "id": "hermes-agent",
-                "name": "Fable 5",
-                "short_name": "Fable 5",
+                "id": "auto/best-coding",
+                "name": "Hermes Coding Pro",
+                "short_name": "Coding Pro",
                 "voice_model": None,
-                "description": {"english": "For your toughest challenges"},
+                "description": {"english": "Optimized for programming, debugging, and architectures"},
                 "notice": None,
                 "selection_notice": None,
                 "section": "main",
                 "disabled": False,
                 "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
                 "thinking": DEFAULT_THINKING_OPTIONS,
-                "badge": {"message": {"english": "Pro"}}
+                "badge": {"message": {"english": "PRO"}}
+            },
+            {
+                "id": "auto/best-fast",
+                "name": "Hermes Turbo",
+                "short_name": "Turbo",
+                "voice_model": None,
+                "description": {"english": "Ultra-low latency streaming for rapid dialogue"},
+                "notice": None,
+                "selection_notice": None,
+                "section": "main",
+                "disabled": False,
+                "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
+                "thinking": DEFAULT_THINKING_OPTIONS,
+                "badge": {"message": {"english": "FAST"}}
+            },
+            {
+                "id": "groq/llama-3.3-70b-versatile",
+                "name": "Llama 3.3 70B",
+                "short_name": "Llama 3.3",
+                "voice_model": None,
+                "description": {"english": "Open-weights intelligence hosted on Groq high-speed LPU"},
+                "notice": None,
+                "selection_notice": None,
+                "section": "main",
+                "disabled": False,
+                "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
+                "thinking": DEFAULT_THINKING_OPTIONS,
+                "badge": {"message": {"english": "GROQ"}}
+            },
+            {
+                "id": "antigravity/gemini-2.5-flash-thinking",
+                "name": "Gemini 2.5 Thinking",
+                "short_name": "Gemini Thinking",
+                "voice_model": None,
+                "description": {"english": "Extended chain-of-thought with reasoning tokens"},
+                "notice": None,
+                "selection_notice": None,
+                "section": "main",
+                "disabled": False,
+                "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
+                "thinking": DEFAULT_THINKING_OPTIONS,
+                "badge": {"message": {"english": "THINK"}}
             }
         ]
     },
@@ -289,8 +447,8 @@ MODEL_SELECTOR_CONFIG_LIST = [
         "models": [
             {
                 "id": "claude-3-5-sonnet-20241022",
-                "name": "Sonnet 5",
-                "short_name": "Sonnet 5 Low",
+                "name": "Sonnet 3.7",
+                "short_name": "Sonnet 3.7",
                 "voice_model": None,
                 "description": None,
                 "notice": None,
@@ -302,9 +460,9 @@ MODEL_SELECTOR_CONFIG_LIST = [
                 "badge": None
             },
             {
-                "id": "claude-3-5-haiku-20241022",
-                "name": "Haiku 4.5",
-                "short_name": "Haiku 4.5",
+                "id": "auto/best-fast",
+                "name": "Hermes Turbo",
+                "short_name": "Turbo",
                 "voice_model": None,
                 "description": None,
                 "notice": None,
@@ -313,7 +471,7 @@ MODEL_SELECTOR_CONFIG_LIST = [
                 "disabled": False,
                 "capabilities": {"mm_images": True, "mm_pdf": True, "web_search": True, "code_execution": True},
                 "thinking": None,
-                "badge": None
+                "badge": {"message": {"english": "FAST"}}
             }
         ]
     }
@@ -322,7 +480,7 @@ MODEL_SELECTOR_CONFIG_LIST = [
 MODEL_SELECTOR_STATE_LIST = [
     {
         "id": "chat",
-        "model": "hermes-agent",
+        "model": "auto/smart",
         "thinking": {
             "mode": "auto",
             "effort": "high"
@@ -826,7 +984,7 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
     prompt = body.get("prompt", "")
     attachments = body.get("attachments", [])
     files = body.get("files", [])
-    model = "hermes-agent"
+    model = body.get("model") or _CONVERSATIONS.get(chat_id, {}).get("settings", {}).get("model") or "auto/smart"
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
 
     file_context_blocks = []
@@ -916,9 +1074,60 @@ def _find_artifact_across_all(art_id: str):
     for cid, conv in _CONVERSATIONS.items():
         arts = _extract_artifacts_from_conv(cid)
         for a in arts:
-            if a.get("id") == art_id or a.get("identifier") == art_id or a.get("uuid") == art_id:
+            if a.get("id") == art_id or a.get("identifier") == art_id or a.get("uuid") == art_id or a.get("artifact_uuid") == art_id:
                 return cid, a
     return None, None
+
+def _create_version_record(art: Optional[Dict[str, Any]], artifact_id: str, chat_id: Optional[str] = None) -> Dict[str, Any]:
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    if art:
+        art_uuid = art.get("uuid") or art.get("id") or artifact_id
+        ver_uuid = art.get("version_uuid") or str(uuid.uuid4())
+        art_type = art.get("type") or art.get("artifact_type") or "application/vnd.ant.markdown"
+        title = art.get("title") or "Document"
+        lang = art.get("language") or art.get("code_language") or ""
+        content = art.get("content") or ""
+        created_at = art.get("created_at") or now_ts
+        updated_at = art.get("updated_at") or now_ts
+        msg_uuid = art.get("message_uuid") or str(uuid.uuid4())
+    else:
+        art_uuid = artifact_id
+        ver_uuid = str(uuid.uuid4())
+        art_type = "application/vnd.ant.markdown"
+        title = "Document"
+        lang = ""
+        content = ""
+        created_at = now_ts
+        updated_at = now_ts
+        msg_uuid = str(uuid.uuid4())
+
+    return {
+        "id": art_uuid,
+        "uuid": ver_uuid,
+        "artifact_uuid": art_uuid,
+        "version_uuid": ver_uuid,
+        "version_index": 1,
+        "version": 1,
+        "message_uuid": msg_uuid,
+        "chat_conversation_uuid": chat_id or "",
+        "identifier": art_uuid,
+        "type": art_type,
+        "artifact_type": art_type,
+        "code_language": lang,
+        "language": lang,
+        "title": title,
+        "result_state": "complete",
+        "published_artifact_uuid": None,
+        "published_artifact_deleted_at": None,
+        "source": "c",
+        "visibility": "private",
+        "is_complete": True,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "content": content,
+        "text": content,
+        "markdown": content
+    }
 
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
@@ -934,77 +1143,45 @@ async def list_conversation_artifacts(org_id: str, chat_id: str):
 @router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
 async def get_artifact(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
     cid, art = _find_artifact_across_all(artifact_id)
-    if art:
-        return art
-    if chat_id:
-        for a in _extract_artifacts_from_conv(chat_id):
-            if a.get("id") == artifact_id or a.get("identifier") == artifact_id or a.get("uuid") == artifact_id:
-                return a
-    return {
-        "id": artifact_id,
-        "uuid": artifact_id,
-        "identifier": artifact_id,
-        "type": "application/vnd.ant.markdown",
-        "title": "Document",
-        "content": "",
-        "is_complete": True
-    }
+    rec = _create_version_record(art, artifact_id, chat_id=cid or chat_id)
+    return rec
 
 @router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/versions")
 @router.get("/organizations/{org_id}/artifacts/{artifact_id}/versions")
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions")
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/versions_v2")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/versions_v2")
 @router.get("/hermes/api/organizations/{org_id}/artifacts/{artifact_id}/versions")
 async def get_artifact_versions(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
     cid, art = _find_artifact_across_all(artifact_id)
-    if not art and chat_id:
-        for a in _extract_artifacts_from_conv(chat_id):
-            if a.get("id") == artifact_id or a.get("identifier") == artifact_id or a.get("uuid") == artifact_id:
-                art = a
-                break
-    
-    if art:
-        version_record = {
-            "uuid": art.get("version_uuid") or str(uuid.uuid4()),
-            "artifact_uuid": art.get("uuid") or artifact_id,
-            "message_uuid": str(uuid.uuid4()),
-            "artifact_type": art.get("type", "application/vnd.ant.markdown"),
-            "code_language": art.get("language", ""),
-            "title": art.get("title", "Document"),
-            "result_state": "complete",
-            "published_artifact_uuid": None,
-            "published_artifact_deleted_at": None,
-            "source": "c",
-            "visibility": "private",
-            "created_at": art.get("created_at") or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "content": art.get("content", "")
-        }
-        return {
-            "artifact_versions": [version_record],
-            "versions": [version_record],
-            "data": [version_record]
-        }
-    
-    fallback_version = {
-        "uuid": str(uuid.uuid4()),
-        "artifact_uuid": artifact_id,
-        "message_uuid": str(uuid.uuid4()),
-        "artifact_type": "application/vnd.ant.markdown",
-        "code_language": "",
-        "title": "Document",
-        "result_state": "complete",
-        "published_artifact_uuid": None,
-        "published_artifact_deleted_at": None,
-        "source": "c",
-        "visibility": "private",
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "content": ""
-    }
-    return {
-        "artifact_versions": [fallback_version],
-        "versions": [fallback_version],
-        "data": [fallback_version]
-    }
+    rec = _create_version_record(art, artifact_id, chat_id=cid or chat_id)
+    res = dict(rec)
+    res["artifact_versions"] = [rec]
+    res["versions"] = [rec]
+    res["data"] = [rec]
+    return res
+
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/version/{version_id}")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/version/{version_id}")
+@router.get("/api/organizations/{org_id}/artifact-versions/{version_id}")
+@router.get("/organizations/{org_id}/artifact-versions/{version_id}")
+@router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/version/{version_id}")
+@router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/version/{version_id}")
+async def get_artifact_version_by_id(org_id: str, version_id: str, artifact_id: Optional[str] = None, chat_id: Optional[str] = None):
+    art_lookup = artifact_id or version_id
+    cid, art = _find_artifact_across_all(art_lookup)
+    rec = _create_version_record(art, art_lookup, chat_id=cid or chat_id)
+    return rec
+
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/content")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/content")
+@router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/content")
+@router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/content")
+async def get_artifact_content(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
+    cid, art = _find_artifact_across_all(artifact_id)
+    content = art.get("content", "") if art else ""
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 @router.get("/api/organizations/{org_id}/user_artifacts")
 @router.get("/organizations/{org_id}/user_artifacts")
@@ -1101,6 +1278,7 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             padding: 14px;
             overflow-x: auto;
             border: 1px solid var(--border-color);
+            position: relative;
         }
         code {
             font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -1131,28 +1309,40 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
         th {
             background-color: var(--code-bg);
         }
-        a { color: var(--link-color); }
-        img, svg { max-width: 100%; height: auto; }
+        a { color: var(--link-color); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        img, svg { max-width: 100%; height: auto; display: block; margin: 12px 0; }
         #root { width: 100%; min-height: 100%; }
         .loading {
             display: flex;
             align-items: center;
             justify-content: center;
-            height: 100px;
+            height: 120px;
             color: #888;
             font-style: italic;
+        }
+        .header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 8px;
+            margin-bottom: 16px;
+        }
+        .header-title {
+            font-weight: 600;
+            font-size: 16px;
         }
     </style>
 </head>
 <body>
     <div id="root">
-        <div class="loading">Loading artifact...</div>
+        <div class="loading">Loading artifact preview...</div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         function postToHost(msg) {
             try {
-                if (window.parent) {
+                if (window.parent && window.parent !== window) {
                     window.parent.postMessage(msg, '*');
                 }
             } catch(e) {}
@@ -1161,11 +1351,20 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
                     window.top.postMessage(msg, '*');
                 }
             } catch(e) {}
+            try {
+                if (window.Android && window.Android.postMessage) {
+                    window.Android.postMessage(typeof msg === 'string' ? msg : JSON.stringify(msg));
+                }
+            } catch(e) {}
+            try {
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.sandbox) {
+                    window.webkit.messageHandlers.sandbox.postMessage(msg);
+                }
+            } catch(e) {}
         }
 
         var contentReceived = false;
 
-        // Notify Host that sandbox is ready for content via wire format
         function notifyReady() {
             if (contentReceived) return;
             var reqId = "ready-" + Date.now();
@@ -1185,40 +1384,60 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             postToHost("readyForContent");
         }
 
-        function basicMarkdown(src) {
+        // Fast zero-dependency markdown parser
+        function renderMarkdown(src) {
             if (!src) return '';
-            // Basic fallback markdown parser
-            let out = src
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-            
+            var html = src;
+
+            // Escape HTML characters in pure text mode
+            html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
             // Fenced code blocks
-            out = out.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, function(m, lang, code) {
-                return '<pre><code>' + code + '</code></pre>';
+            html = html.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, function(m, lang, code) {
+                return '<pre><code class="language-' + (lang || 'text') + '">' + code + '</code></pre>';
             });
+
             // Inline code
-            out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
-            // Headings
-            out = out.replace(/^### (.*$)/gim, '<h3>$1</h3>');
-            out = out.replace(/^## (.*$)/gim, '<h2>$1</h2>');
-            out = out.replace(/^# (.*$)/gim, '<h1>$1</h1>');
-            // Bold and Italic
-            out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-            out = out.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-            // Paragraphs
-            out = out.replace(/\n\n+/g, '<br><br>');
-            return out;
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+            // Headers
+            html = html.replace(/^###### (.*$)/gim, '<h6>$1</h6>');
+            html = html.replace(/^##### (.*$)/gim, '<h5>$1</h5>');
+            html = html.replace(/^#### (.*$)/gim, '<h4>$1</h4>');
+            html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+            html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+            html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+
+            // Blockquotes
+            html = html.replace(/^\> (.*$)/gim, '<blockquote>$1</blockquote>');
+
+            // Unordered list items
+            html = html.replace(/^\s*[-*+]\s+(.*$)/gim, '<li>$1</li>');
+
+            // Bold & Italic
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+            html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+            // Links
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+            // Linebreaks and paragraphs
+            html = html.replace(/\n\n+/g, '<br><br>');
+            html = html.replace(/\n/g, '<br>');
+
+            return html;
         }
 
         function renderContent(data) {
             contentReceived = true;
             const root = document.getElementById('root');
             if (!data) return;
-            
+
             let content = '';
             let type = '';
-            
+
             if (typeof data === 'string') {
                 content = data;
             } else {
@@ -1238,21 +1457,31 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             if (!content) return;
 
             try {
+                type = (type || '').toLowerCase();
                 if (type.includes('html') || content.trim().startsWith('<!DOCTYPE html') || content.trim().startsWith('<html')) {
                     root.innerHTML = content;
                 } else if (type.includes('svg') || content.trim().startsWith('<svg')) {
                     root.innerHTML = content;
                 } else {
-                    if (window.marked && typeof window.marked.parse === 'function') {
-                        root.innerHTML = marked.parse(content);
-                    } else {
-                        root.innerHTML = basicMarkdown(content);
-                    }
+                    root.innerHTML = renderMarkdown(content);
                 }
             } catch(e) {
                 root.innerHTML = '<pre>' + content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
             }
         }
+
+        window.renderContent = renderContent;
+        window.setArtifactContent = renderContent;
+
+        // Check query string ?content=...
+        try {
+            var params = new URLSearchParams(window.location.search);
+            var qContent = params.get('content') || params.get('text');
+            var qType = params.get('type') || params.get('artifact_type') || '';
+            if (qContent) {
+                renderContent({ content: qContent, type: qType });
+            }
+        } catch(e) {}
 
         window.addEventListener('message', function(event) {
             if (!event.data) return;
@@ -1265,12 +1494,10 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             const reqId = d.requestId || d.request_id || d.id;
             const method = d.method || '';
 
-            // If it's a request from host (SetContent, etc.)
             if (d.channel === 'request' || method.includes('SetContent') || d.payload || d.content) {
                 const payload = d.payload || d;
                 renderContent(payload);
 
-                // Acknowledge the request to complete Host's Deferred/Promise
                 if (reqId) {
                     var respMsg = {
                         channel: "response",
@@ -1285,7 +1512,7 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             }
         });
 
-        // Initialize handshake with aggressive intervals until content is received
+        // Initialize handshake
         notifyReady();
         var readyTimer = setInterval(function() {
             if (contentReceived) {
