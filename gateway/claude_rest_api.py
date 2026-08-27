@@ -2512,3 +2512,425 @@ async def add_custom_model_api(request: Request):
     return {"status": "ok", "model": m_id, "total_models": len(MODELS_CATALOG)}
 
 
+
+
+# 11. Channels & Social Media Management (Telegram, Gmail, Discord, Webhooks)
+from gateway import channels_manager as cm
+
+_CHANNELS_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes - Multi-Channel Integrations</title>
+    <style>
+        :root {
+            --bg-main: #141416;
+            --bg-card: #1e1f23;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --accent-orange: #d97706;
+            --accent-green: #10b981;
+            --accent-blue: #3b82f6;
+            --border: #2e3038;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 24px 16px;
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+        }
+        .container { max-width: 820px; width: 100%; }
+        .nav-links { display: flex; justify-content: center; gap: 12px; margin-bottom: 24px; }
+        .nav-link { padding: 8px 16px; border-radius: 8px; background-color: var(--bg-card); color: var(--text-secondary); text-decoration: none; font-size: 13px; font-weight: 600; border: 1px solid var(--border); }
+        .nav-link.active { background-color: var(--accent-orange); color: #fff; border-color: var(--accent-orange); }
+        .header { text-align: center; margin-bottom: 28px; }
+        .header h1 { font-size: 24px; margin: 0 0 8px 0; }
+        .header p { color: var(--text-secondary); font-size: 14px; margin: 0; }
+        .channel-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 20px 24px;
+            margin-bottom: 20px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .channel-title { font-size: 17px; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+        .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 4px; text-transform: uppercase; }
+        .badge-active { background-color: rgba(16, 185, 129, 0.2); color: #34d399; }
+        .badge-inactive { background-color: rgba(107, 114, 128, 0.2); color: #9ca3af; }
+        .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+        .input-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+        label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+        input {
+            background-color: #141416;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text-primary);
+            font-size: 13.5px;
+            outline: none;
+        }
+        input:focus { border-color: var(--accent-orange); }
+        .card-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+        button {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            padding: 9px 16px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background-color: #27272a;
+            color: var(--text-primary);
+            transition: all 0.15s ease;
+        }
+        button:hover { background-color: #3f3f46; }
+        button.btn-primary { background-color: var(--accent-orange); border-color: var(--accent-orange); color: #fff; }
+        button.btn-primary:hover { background-color: #b45309; }
+        .status-banner { display: none; padding: 12px 16px; border-radius: 8px; margin-bottom: 20px; font-size: 13.5px; }
+        .status-banner.success { display: block; background-color: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .status-banner.error { display: block; background-color: rgba(239, 68, 68, 0.15); color: #f87171; }
+        .code-box { background-color: #141416; border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 12.5px; color: #a1a1aa; word-break: break-all; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav-links">
+            <a href="/settings/models" class="nav-link">⚙️ Models</a>
+            <a href="/settings/channels" class="nav-link active">🌐 Channels & Social</a>
+            <a href="/login" class="nav-link">🔐 Admin Login</a>
+        </div>
+
+        <div class="header">
+            <h1>🌐 Multi-Channel Integrations</h1>
+            <p>Connect your Hermes Agentic AI to Telegram, Gmail, Discord, Slack, and Webhooks with formatted responses.</p>
+        </div>
+
+        <div id="statusBanner" class="status-banner"></div>
+
+        <!-- 1. Telegram Bot Card -->
+        <div class="channel-card">
+            <div class="card-header">
+                <div class="channel-title">✈️ Telegram Bot</div>
+                <span id="tgBadge" class="badge badge-inactive">STANDBY</span>
+            </div>
+            <div class="input-group">
+                <label>Telegram Bot Token (from @BotFather)</label>
+                <input type="password" id="tgToken" placeholder="e.g. 1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ">
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Allowed Usernames / IDs (* for all)</label>
+                    <input type="text" id="tgAllowed" placeholder="e.g. * or your_username">
+                </div>
+                <div class="input-group">
+                    <label>Admin Chat ID (Optional)</label>
+                    <input type="text" id="tgAdmin" placeholder="e.g. 123456789">
+                </div>
+            </div>
+            <div class="card-actions">
+                <button onclick="testChannel('telegram', this)">Ping Bot API</button>
+                <button class="btn-primary" onclick="saveTelegram()">Save & Start Telegram Bot</button>
+            </div>
+        </div>
+
+        <!-- 2. Gmail / Email Agent Card -->
+        <div class="channel-card">
+            <div class="card-header">
+                <div class="channel-title">📧 Gmail & Email Agent</div>
+                <span id="emailBadge" class="badge badge-inactive">STANDBY</span>
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Gmail Address</label>
+                    <input type="email" id="emailAddr" value="jishnupg2005@gmail.com">
+                </div>
+                <div class="input-group">
+                    <label>Google App Password (16 chars)</label>
+                    <input type="password" id="emailPwd" placeholder="e.g. abcd efgh ijkl mnop">
+                </div>
+            </div>
+            <div class="input-row">
+                <div class="input-group">
+                    <label>Allowed Senders (* for all)</label>
+                    <input type="text" id="emailAllowed" value="*">
+                </div>
+                <div class="input-group">
+                    <label>Poll Interval (Seconds)</label>
+                    <input type="number" id="emailInterval" value="15">
+                </div>
+            </div>
+            <div class="card-actions">
+                <button onclick="testChannel('email', this)">Test IMAP / SMTP</button>
+                <button class="btn-primary" onclick="saveEmail()">Save & Start Email Agent</button>
+            </div>
+        </div>
+
+        <!-- 3. Universal Webhooks Card -->
+        <div class="channel-card">
+            <div class="card-header">
+                <div class="channel-title">⚡ Inbound Webhook Endpoint</div>
+                <span class="badge badge-active">ACTIVE</span>
+            </div>
+            <p style="font-size: 13.5px; color: var(--text-secondary); margin-top: 0;">
+                Send HTTP POST requests from GitHub, Discord, Twitter/X bots, or cron services to trigger autonomous agent reasoning:
+            </p>
+            <div class="code-box" id="webhookUrl">
+                POST https://jishnupg-hermes.hf.space/api/webhooks/incoming
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showStatus(msg, isSuccess) {
+            var b = document.getElementById('statusBanner');
+            b.className = 'status-banner ' + (isSuccess ? 'success' : 'error');
+            b.innerText = msg;
+            setTimeout(function() { b.style.display = 'none'; }, 4500);
+        }
+
+        async function loadChannels() {
+            try {
+                var res = await fetch('/api/settings/channels');
+                var d = await res.json();
+                
+                if (d.telegram) {
+                    document.getElementById('tgAllowed').value = d.telegram.allowed_users || '*';
+                    document.getElementById('tgAdmin').value = d.telegram.admin_id || '';
+                    if (d.telegram.enabled && d.telegram.has_token) {
+                        var b = document.getElementById('tgBadge');
+                        b.className = 'badge badge-active';
+                        b.innerText = 'CONNECTED';
+                        document.getElementById('tgToken').placeholder = '•••••••••••••••••••••••• (Saved)';
+                    }
+                }
+
+                if (d.email) {
+                    document.getElementById('emailAddr').value = d.email.address || 'jishnupg2005@gmail.com';
+                    document.getElementById('emailAllowed').value = d.email.allowed_users || '*';
+                    document.getElementById('emailInterval').value = d.email.poll_interval || 15;
+                    if (d.email.enabled && d.email.has_password) {
+                        var eb = document.getElementById('emailBadge');
+                        eb.className = 'badge badge-active';
+                        eb.innerText = 'CONNECTED';
+                        document.getElementById('emailPwd').placeholder = '•••••••••••••••• (Saved)';
+                    }
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        async function saveTelegram() {
+            var token = document.getElementById('tgToken').value.trim();
+            var allowed = document.getElementById('tgAllowed').value.trim() || '*';
+            var adminId = document.getElementById('tgAdmin').value.trim();
+
+            try {
+                var res = await fetch('/api/settings/channels/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        channel: 'telegram',
+                        token: token,
+                        allowed_users: allowed,
+                        admin_id: adminId,
+                        enabled: true
+                    })
+                });
+                var d = await res.json();
+                if (res.ok) {
+                    showStatus('Telegram Bot configuration saved and started!', true);
+                    loadChannels();
+                } else {
+                    showStatus('Failed to save Telegram config', false);
+                }
+            } catch(e) {
+                showStatus('Error: ' + e.message, false);
+            }
+        }
+
+        async function saveEmail() {
+            var addr = document.getElementById('emailAddr').value.trim();
+            var pwd = document.getElementById('emailPwd').value.trim();
+            var allowed = document.getElementById('emailAllowed').value.trim() || '*';
+            var interval = parseInt(document.getElementById('emailInterval').value) || 15;
+
+            try {
+                var res = await fetch('/api/settings/channels/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        channel: 'email',
+                        address: addr,
+                        password: pwd,
+                        allowed_users: allowed,
+                        poll_interval: interval,
+                        enabled: true
+                    })
+                });
+                var d = await res.json();
+                if (res.ok) {
+                    showStatus('Email Agent configuration saved and started!', true);
+                    loadChannels();
+                } else {
+                    showStatus('Failed to save Email config', false);
+                }
+            } catch(e) {
+                showStatus('Error: ' + e.message, false);
+            }
+        }
+
+        async function testChannel(channel, btn) {
+            btn.innerText = 'Testing...';
+            btn.disabled = true;
+            try {
+                var res = await fetch('/api/settings/channels/test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({channel: channel})
+                });
+                var d = await res.json();
+                if (res.ok && d.status === 'ok') {
+                    btn.innerText = 'Connected ✓';
+                    btn.style.color = '#34d399';
+                } else {
+                    btn.innerText = 'Failed ✗';
+                    btn.style.color = '#f87171';
+                }
+            } catch(e) {
+                btn.innerText = 'Error ✗';
+                btn.style.color = '#f87171';
+            }
+            setTimeout(function() { btn.innerText = (channel === 'telegram' ? 'Ping Bot API' : 'Test IMAP / SMTP'); btn.style.color = ''; btn.disabled = false; }, 3500);
+        }
+
+        loadChannels();
+    </script>
+</body>
+</html>"""
+
+@router.get("/settings/channels", response_class=HTMLResponse)
+@router.get("/hermes/settings/channels", response_class=HTMLResponse)
+@router.get("/settings/integrations", response_class=HTMLResponse)
+async def get_channels_settings_page():
+    return HTMLResponse(content=_CHANNELS_HTML, headers={"Content-Type": "text/html; charset=utf-8"})
+
+@router.get("/api/settings/channels")
+@router.get("/hermes/api/settings/channels")
+async def get_channels_settings_api():
+    cfg = cm.load_channels_config()
+    safe_cfg = {
+        "telegram": {
+            "enabled": cfg.get("telegram", {}).get("enabled", False),
+            "has_token": bool(cfg.get("telegram", {}).get("token")),
+            "allowed_users": cfg.get("telegram", {}).get("allowed_users", "*"),
+            "admin_id": cfg.get("telegram", {}).get("admin_id", "")
+        },
+        "email": {
+            "enabled": cfg.get("email", {}).get("enabled", False),
+            "address": cfg.get("email", {}).get("address", "jishnupg2005@gmail.com"),
+            "has_password": bool(cfg.get("email", {}).get("password")),
+            "allowed_users": cfg.get("email", {}).get("allowed_users", "*"),
+            "poll_interval": cfg.get("email", {}).get("poll_interval", 15)
+        },
+        "discord": {
+            "enabled": cfg.get("discord", {}).get("enabled", False),
+            "has_token": bool(cfg.get("discord", {}).get("token"))
+        }
+    }
+    return safe_cfg
+
+@router.post("/api/settings/channels/update")
+@router.post("/hermes/api/settings/channels/update")
+async def update_channels_settings_api(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    ch_type = body.get("channel")
+    cfg = cm.load_channels_config()
+
+    if ch_type == "telegram":
+        token = body.get("token")
+        if token:
+            cfg["telegram"]["token"] = token
+        cfg["telegram"]["allowed_users"] = body.get("allowed_users", "*")
+        cfg["telegram"]["admin_id"] = body.get("admin_id", "")
+        cfg["telegram"]["enabled"] = True
+    elif ch_type == "email":
+        addr = body.get("address")
+        pwd = body.get("password")
+        if addr:
+            cfg["email"]["address"] = addr
+        if pwd:
+            cfg["email"]["password"] = pwd
+        cfg["email"]["allowed_users"] = body.get("allowed_users", "*")
+        cfg["email"]["poll_interval"] = body.get("poll_interval", 15)
+        cfg["email"]["enabled"] = True
+
+    cm.save_channels_config(cfg)
+    asyncio.create_task(cm.restart_channels())
+    return {"status": "ok", "message": f"{ch_type} channel updated"}
+
+@router.post("/api/settings/channels/test")
+@router.post("/hermes/api/settings/channels/test")
+async def test_channel_api(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    ch_type = body.get("channel")
+    cfg = cm.load_channels_config()
+
+    if ch_type == "telegram":
+        token = cfg.get("telegram", {}).get("token")
+        if not token:
+            return {"status": "error", "message": "No Telegram Bot Token configured"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(f"https://api.telegram.org/bot{token}/getMe")
+            if res.status_code == 200:
+                bot_info = res.json().get("result", {})
+                return {"status": "ok", "bot": bot_info.get("username")}
+            return {"status": "error", "message": f"Telegram API error: {res.status_code}"}
+
+    elif ch_type == "email":
+        addr = cfg.get("email", {}).get("address")
+        pwd = cfg.get("email", {}).get("password")
+        imap_host = cfg.get("email", {}).get("imap_host", "imap.gmail.com")
+        if not addr or not pwd:
+            return {"status": "error", "message": "Email address or password missing"}
+        try:
+            import imaplib
+            m = imaplib.IMAP4_SSL(imap_host, 993)
+            m.login(addr, pwd)
+            m.logout()
+            return {"status": "ok", "message": "IMAP login successful"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    return {"status": "error", "message": "Unknown channel"}
+
+@router.post("/api/webhooks/incoming")
+@router.post("/hermes/api/webhooks/incoming")
+async def incoming_webhook(request: Request):
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {"text": "Incoming webhook trigger"}
+    
+    text = payload.get("text") or payload.get("message") or payload.get("content") or json.dumps(payload)
+    reply = await cm.generate_agent_response(f"[Webhook Event]\n{text}", session_id="webhook_trigger")
+    return {"status": "ok", "response": reply}
+

@@ -189,6 +189,21 @@ async def logs_service(service: str):
         content = f"(error: {e})"
     return HTMLResponse(f"<pre style='font-family:monospace;background:#0d1117;color:#c9d1d9;padding:16px'>{content}</pre>")
 
+@app.on_event("startup")
+async def on_startup():
+    try:
+        from gateway import channels_manager
+        await channels_manager.start_all_channels()
+    except Exception as e:
+        print(f"Error starting channels manager: {e}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        from gateway import channels_manager
+        await channels_manager.stop_all_channels()
+    except Exception as e:
+        pass
 
 # ── Catch-all proxy -> Hermes agent ─────────────────────────────
 app.include_router(hermes_proxy_router)
