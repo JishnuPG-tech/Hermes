@@ -744,6 +744,8 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
 
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             text_delta = delta.get("content", "")
+            if not text_delta:
+                text_delta = chunk.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
 
             if text_delta:
                 if not text_active:

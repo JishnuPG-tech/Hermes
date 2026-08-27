@@ -199,11 +199,19 @@ async def stream_upstream(payload: dict, requested_model: Optional[str] = None, 
                             async for line in r.aiter_lines():
                                 line = line.strip()
                                 if line.startswith("data: "):
+                                    data_content = line[6:]
+                                    # Filter out omniroute keepalive chunks from satisfying content yield
+                                    try:
+                                        chunk_obj = json.loads(data_content)
+                                        if chunk_obj.get("id") == "omniroute-keepalive":
+                                            continue
+                                    except Exception:
+                                        pass
                                     has_yielded = True
-                                    yield line[6:]
+                                    yield data_content
                                 elif line == "data: [DONE]":
-                                    has_yielded = True
-                                    yield "[DONE]"
+                                    if has_yielded:
+                                        yield "[DONE]"
                             if has_yielded:
                                 model_succeeded = True
                                 return
