@@ -39,21 +39,69 @@ def _save_history():
 
 _load_history()
 
-def _format_msg(sender: str, text: str, idx: int, prev_uuid: Optional[str] = None) -> Dict[str, Any]:
-    msg_id = str(uuid.uuid4())
+def _format_msg(sender: str, text: str, idx: int, prev_uuid: Optional[str] = None, msg_id: Optional[str] = None) -> Dict[str, Any]:
+    mid = msg_id or str(uuid.uuid4())
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     return {
-        "uuid": msg_id,
+        "uuid": mid,
         "text": text,
         "sender": sender,
         "index": idx,
         "created_at": now,
         "updated_at": now,
+        "edited_at": None,
         "content": [{"type": "text", "text": text}],
         "attachments": [],
         "files": [],
-        "parent_message_uuid": prev_uuid
+        "parent_message_uuid": prev_uuid,
+        "stop_reason": "end_turn" if sender == "assistant" else None
     }
+
+async def _generate_ai_title_async(chat_id: str, first_prompt: str):
+    """Generate a clean, professional 3-6 word AI title using fast LLM inference."""
+    if not first_prompt or len(first_prompt.strip()) < 2:
+        return
+    try:
+        payload = {
+            "model": "auto/best-fast",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a professional title generator. Generate a concise, clear 3 to 6 word title summarizing the user prompt. Return ONLY the title text with no quotes, no markdown, and no punctuation."
+                },
+                {
+                    "role": "user",
+                    "content": first_prompt[:400]
+                }
+            ],
+            "max_tokens": 16
+        }
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.post(
+                "http://127.0.0.1:20128/v1/chat/completions",
+                headers={"Authorization": f"Bearer {ab.UPSTREAM_KEY}", "Content-Type": "application/json"},
+                json=payload
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                t = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                t = re.sub(r'["'`\.\#\*\:\n\r]', '', t).strip()
+                if t and len(t) >= 3 and len(t) <= 60:
+                    if chat_id in _CONVERSATIONS:
+                        _CONVERSATIONS[chat_id]["name"] = t
+                        _CONVERSATIONS[chat_id]["summary"] = t
+                        _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                        _save_history()
+                        logger.info(f"AI Title generated for {chat_id}: '{t}'")
+                        return
+    except Exception as e:
+        logger.warning(f"AI title generation fallback: {e}")
+
+    if chat_id in _CONVERSATIONS:
+        clean = _clean_title(first_prompt)
+        _CONVERSATIONS[chat_id]["name"] = clean
+        _CONVERSATIONS[chat_id]["summary"] = clean
+        _save_history()
 
 def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
     conv = _CONVERSATIONS.get(chat_id, {})
@@ -152,10 +200,30 @@ def _extract_render_values(chat_id: str) -> Dict[str, Any]:
 
 def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
     msgs = conv.get("chat_messages", [])
-    leaf_uuid = msgs[-1]["uuid"] if msgs else None
     chat_id = conv.get("uuid")
     artifacts = _extract_artifacts_from_conv(chat_id)
     render_vals = _extract_render_values(chat_id)
+    
+    # Ensure every message has valid fields and parent linkage
+    sanitized_msgs = []
+    prev_uuid = None
+    for i, m in enumerate(msgs):
+        m_copy = dict(m)
+        m_copy["index"] = i
+        if not m_copy.get("uuid"):
+            m_copy["uuid"] = str(uuid.uuid4())
+        if prev_uuid and not m_copy.get("parent_message_uuid"):
+            m_copy["parent_message_uuid"] = prev_uuid
+        if not m_copy.get("content"):
+            txt = m_copy.get("text", "")
+            m_copy["content"] = [{"type": "text", "text": txt}]
+        if m_copy.get("sender") == "assistant" and not m_copy.get("stop_reason"):
+            m_copy["stop_reason"] = "end_turn"
+        sanitized_msgs.append(m_copy)
+        prev_uuid = m_copy["uuid"]
+
+    leaf_uuid = sanitized_msgs[-1]["uuid"] if sanitized_msgs else None
+
     return {
         "uuid": chat_id,
         "name": conv.get("name", "Chat"),
@@ -168,7 +236,7 @@ def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
         },
         "is_starred": conv.get("is_starred", False),
         "current_leaf_message_uuid": leaf_uuid,
-        "chat_messages": msgs,
+        "chat_messages": sanitized_msgs,
         "artifacts": artifacts,
         "render_values": render_vals
     }
@@ -1106,9 +1174,11 @@ async def set_conversation_title(org_id: str, chat_id: str, request: Request):
     except Exception:
         body = {}
     title = body.get("title") or body.get("name")
+    prompt = body.get("message_content") or body.get("prompt") or ""
     if not title:
-        prompt = body.get("message_content") or body.get("prompt") or ""
         title = _clean_title(prompt)
+        if prompt:
+            asyncio.create_task(_generate_ai_title_async(chat_id, prompt))
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if chat_id in _CONVERSATIONS:
         _CONVERSATIONS[chat_id]["name"] = title
