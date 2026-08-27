@@ -547,8 +547,21 @@ async def list_models():
 @router.get("/api/account")
 @router.get("/account")
 @router.get("/hermes/api/account")
+@router.get("/hermes/account")
 async def get_account():
     return ACCOUNT_OBJ
+
+@router.get("/api/account_profile")
+@router.get("/account_profile")
+@router.get("/hermes/api/account_profile")
+@router.get("/hermes/account_profile")
+async def get_account_profile():
+    return {
+        "account": ACCOUNT_OBJ,
+        "user": USER_OBJ,
+        "organization": ORG_OBJ,
+        "profile": ACCOUNT_OBJ
+    }
 
 # 3. App Start & Bootstrap
 @router.get("/api/account/app_start")
@@ -1204,36 +1217,118 @@ async def list_user_artifacts(org_id: str):
             })
     return {"artifacts": all_user_arts, "data": all_user_arts}
 
+_PUBLISHED_ARTIFACTS: Dict[str, Dict[str, Any]] = {}
+
 @router.get("/api/organizations/{org_id}/published_artifacts/{artifact_id}")
 @router.get("/organizations/{org_id}/published_artifacts/{artifact_id}")
 @router.get("/hermes/api/organizations/{org_id}/published_artifacts/{artifact_id}")
-async def get_published_artifact(org_id: str, artifact_id: str):
-    cid, art = _find_artifact_across_all(artifact_id)
-    content = art.get("content", "") if art else ""
-    return {"content": content}
+@router.get("/hermes/organizations/{org_id}/published_artifacts/{artifact_id}")
+async def get_published_artifact(org_id: str, artifact_id: str, request: Request):
+    pub = _PUBLISHED_ARTIFACTS.get(artifact_id)
+    if not pub:
+        cid, art = _find_artifact_across_all(artifact_id)
+        if art:
+            pub = _create_version_record(art, artifact_id, chat_id=cid)
+            _PUBLISHED_ARTIFACTS[artifact_id] = pub
+    
+    if not pub:
+        pub = _create_version_record(None, artifact_id)
+    
+    return pub
 
 @router.post("/api/organizations/{org_id}/publish_artifact")
 @router.post("/organizations/{org_id}/publish_artifact")
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
+@router.post("/hermes/api/organizations/{org_id}/publish_artifact")
+@router.post("/hermes/organizations/{org_id}/publish_artifact")
+@router.post("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
+@router.post("/hermes/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/publish")
 async def publish_artifact(org_id: str, request: Request, chat_id: Optional[str] = None, artifact_id: Optional[str] = None):
-    art_id = artifact_id or str(uuid.uuid4())
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    art_id = artifact_id or body.get("artifact_uuid") or body.get("artifact_identifier") or body.get("id") or str(uuid.uuid4())
     cid, art = _find_artifact_across_all(art_id)
     pub_uuid = str(uuid.uuid4())
-    return {
+    
+    title = (art.get("title") if art else None) or body.get("title") or "Document"
+    art_type = (art.get("type") or art.get("artifact_type") if art else None) or body.get("artifact_type") or "application/vnd.ant.markdown"
+    lang = (art.get("language") or art.get("code_language") if art else None) or body.get("code_language") or ""
+    content = (art.get("content") if art else None) or body.get("content") or ""
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    pub_record = {
+        "uuid": pub_uuid,
+        "artifact_uuid": art_id,
         "published_artifact_uuid": pub_uuid,
         "artifact_identifier": art_id,
-        "title": art.get("title", "Document") if art else "Document",
-        "artifact_type": art.get("type", "application/vnd.ant.markdown") if art else "application/vnd.ant.markdown",
-        "code_language": art.get("language", "") if art else "",
+        "title": title,
+        "artifact_type": art_type,
+        "code_language": lang,
+        "language": lang,
+        "content": content,
+        "text": content,
+        "markdown": content,
         "message_uuid": str(uuid.uuid4()),
+        "result_state": "complete",
         "deleted": False,
         "status": "published",
-        "url": f"https://claude.ai/artifacts/{art_id}"
+        "visibility": "public",
+        "source": "c",
+        "url": f"https://claude.ai/artifacts/{pub_uuid}",
+        "created_at": now_ts,
+        "updated_at": now_ts
     }
+    
+    _PUBLISHED_ARTIFACTS[pub_uuid] = pub_record
+    _PUBLISHED_ARTIFACTS[art_id] = pub_record
+    
+    return pub_record
+
+@router.get("/public/artifacts/{artifact_id}")
+@router.get("/hermes/public/artifacts/{artifact_id}")
+@router.get("/api/public/artifacts/{artifact_id}")
+@router.get("/hermes/api/public/artifacts/{artifact_id}")
+@router.get("/public/artifacts/{artifact_id}/versions")
+@router.get("/hermes/public/artifacts/{artifact_id}/versions")
+@router.get("/public/artifacts/{artifact_id}/version/{version_id}")
+@router.get("/hermes/public/artifacts/{artifact_id}/version/{version_id}")
+@router.get("/public/artifacts/{artifact_id}/content")
+@router.get("/hermes/public/artifacts/{artifact_id}/content")
+async def get_public_artifact_endpoint(artifact_id: str, request: Request, version_id: Optional[str] = None):
+    pub = _PUBLISHED_ARTIFACTS.get(artifact_id)
+    if not pub:
+        cid, art = _find_artifact_across_all(artifact_id)
+        if art:
+            pub = _create_version_record(art, artifact_id, chat_id=cid)
+            _PUBLISHED_ARTIFACTS[artifact_id] = pub
+    
+    if not pub:
+        pub = _create_version_record(None, artifact_id)
+    
+    accept = request.headers.get("accept", "")
+    if "text/html" in accept and "application/json" not in accept:
+        headers = {
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Content-Security-Policy": "frame-ancestors *",
+            "Cache-Control": "no-cache"
+        }
+        return HTMLResponse(content=_SANDBOX_HTML, headers=headers)
+    
+    res = dict(pub)
+    res["artifact_versions"] = [pub]
+    res["versions"] = [pub]
+    res["data"] = [pub]
+    return res
 
 @router.put("/api/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
 @router.put("/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
+@router.put("/hermes/api/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
+@router.put("/hermes/organizations/{org_id}/artifact-versions/{artifact_id}/visibility")
 async def update_artifact_visibility(org_id: str, artifact_id: str, request: Request):
     return {"status": "ok", "artifact_id": artifact_id}
 
