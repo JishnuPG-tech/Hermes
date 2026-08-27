@@ -314,10 +314,10 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
             for item in sorted(os.listdir(dpath)):
                 ipath = dpath / item
                 if ipath.is_dir():
-                    entries.append(f"📁 {item}/")
+                    entries.append(f"{item}/")
                 else:
                     sz = ipath.stat().st_size
-                    entries.append(f"📄 {item} ({sz} bytes)")
+                    entries.append(f"{item} ({sz} bytes)")
             return "\n".join(entries) if entries else "(Directory is empty)"
 
         elif name == "activate_skill":
@@ -328,7 +328,7 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
                     ACTIVE_CONVERSATION_SKILLS[chat_id] = []
                 if sname not in ACTIVE_CONVERSATION_SKILLS[chat_id]:
                     ACTIVE_CONVERSATION_SKILLS[chat_id].append(sname)
-                return f"✓ Skill '{sname}' activated! Description: {skill_info['description']}"
+                return f"Skill '{sname}' is now active. Description: {skill_info['description']}"
             
             custom_skill_file = SKILLS_DIR / sname / "SKILL.md"
             if custom_skill_file.exists():
@@ -337,7 +337,7 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
                     ACTIVE_CONVERSATION_SKILLS[chat_id] = []
                 if sname not in ACTIVE_CONVERSATION_SKILLS[chat_id]:
                     ACTIVE_CONVERSATION_SKILLS[chat_id].append(sname)
-                return f"✓ Custom skill '{sname}' loaded and activated from disk!\n{content[:500]}..."
+                return f"Custom skill '{sname}' loaded and activated from disk.\n{content[:500]}..."
 
             return f"Error: Skill '{sname}' not found. Use list_skills to view available skills."
 
@@ -374,23 +374,23 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
                 chat_id=chat_id
             )
             return (
-                f"✓ **24/7 Background Task Registered!**\n"
+                f"**24/7 Background Task Registered**\n"
                 f"- **Task ID**: `{job['id']}`\n"
                 f"- **Name**: {job['name']}\n"
                 f"- **Interval**: Every {interval} seconds ({interval//60} mins)\n"
                 f"- **Type**: {task_type.upper()}\n"
-                f"- **Status**: 🟢 RUNNING 24/7 in background (persisted to server disk)"
+                f"- **Status**: Active (Running in background on server)"
             )
 
         elif name == "list_background_tasks":
             jobs = bg.get_all_jobs()
             if not jobs:
                 return "No 24/7 background tasks currently scheduled."
-            lines = ["**24/7 Persistent Background Tasks on Server:**\n"]
+            lines = ["### 24/7 Persistent Background Tasks on Server\n"]
             for j in jobs:
-                status_emoji = "🟢" if j.get("enabled") and j.get("status") in ("RUNNING", "SCHEDULED", "SUCCESS") else "🔴"
+                status_label = "[Active]" if j.get("enabled") and j.get("status") in ("RUNNING", "SCHEDULED", "SUCCESS") else "[Paused]"
                 lines.append(
-                    f"{status_emoji} **{j.get('name')}** (`{j.get('id')}`)\n"
+                    f"- **{j.get('name')}** (`{j.get('id')}`) — {status_label}\n"
                     f"  - Interval: Every {j.get('interval_seconds')}s\n"
                     f"  - Runs completed: {j.get('run_count', 0)}\n"
                     f"  - Last run: {j.get('last_run_at') or 'Pending first run'}\n"
@@ -402,7 +402,7 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
             tid = args.get("task_id", "").strip()
             ok = bg.cancel_job(tid)
             if ok:
-                return f"✓ Task `{tid}` has been cancelled and stopped."
+                return f"Task `{tid}` has been stopped."
             return f"Error: Task `{tid}` not found."
 
         elif name == "get_task_logs":
@@ -417,32 +417,36 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
 
 def build_system_prompt_with_skills(chat_id: str) -> str:
     base_prompt = (
-        "You are Hermes, an autonomous agent and AI pair programmer with direct server tool execution and dynamic skills.\n\n"
-        "# Agentic Capabilities & Guidelines:\n"
+        "You are Claude, a helpful, thoughtful, and capable AI assistant created by Anthropic, running with autonomous server tool execution and dynamic skills capabilities.\n\n"
+        "# Voice, Tone & Formatting Guidelines (Claude Style):\n"
+        "- Tone: Write in Claude's authentic voice—thoughtful, direct, articulate, insightful, and concise.\n"
+        "- Clean Typography: DO NOT use excessive or decorative generic emojis (e.g. 🚀, 🛠️, ⚡, 📁, 📄, 💡, 🧠, 🎉, 🔍). Keep your formatting clean, modern, and professional.\n"
+        "- Structure: Use standard GitHub Flavored Markdown, clean headings (##, ###), callouts (> [!NOTE]), organized tables, and fenced code blocks.\n"
+        "- Code: Provide complete, production-grade code with appropriate language tags.\n\n"
+        "# Agentic Capabilities & Tools:\n"
         "1. You have direct access to execute tools on the server:\n"
-        "   - `bash`: Run shell commands.\n"
-        "   - `read_file`: Read server files and codebases.\n"
-        "   - `write_file`: Create and edit files.\n"
-        "   - `list_dir`: Browse directories.\n"
-        "   - `schedule_task`: Schedule autonomous 24/7 background jobs.\n"
-        "   - `list_background_tasks`: View running 24/7 background jobs.\n"
-        "   - `stop_background_task`: Stop a background task.\n"
-        "   - `activate_skill`: Activate specialized domain skills.\n"
+        "   - `bash`: Run shell commands in a controlled container environment.\n"
+        "   - `read_file`: Inspect server files, configurations, and source code.\n"
+        "   - `write_file`: Create or edit files on the server.\n"
+        "   - `list_dir`: Browse directories on the server.\n"
+        "   - `schedule_task`: Schedule autonomous 24/7 background jobs that persist on the server.\n"
+        "   - `list_background_tasks`: View all persistent 24/7 background jobs.\n"
+        "   - `stop_background_task`: Stop a background task by ID.\n"
+        "   - `activate_skill`: Dynamically activate specialized domain skills.\n"
         "   - `list_skills`: View all available skills.\n"
-        "2. When you execute a tool (like `bash` or `read_file`), after receiving the tool result you MUST ALWAYS continue your analysis and provide a complete, detailed, and thorough final answer explaining the findings, code, or results.\n"
-        "3. NEVER stop right after running a command. Always summarize and present the complete requested information.\n\n"
+        "2. When you execute a tool (e.g. `bash` or `read_file`), after receiving the tool result you MUST ALWAYS continue your analysis and provide a complete, detailed, and thorough final answer explaining the findings, code, or results.\n"
+        "3. NEVER stop right after running a command. Always analyze and present the complete requested information.\n\n"
         "# Artifacts Guidelines:\n"
-        "When generating complete, substantial, or self-contained documents, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag:\n"
+        "When generating complete, substantial, or self-contained documents, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag so it renders as an interactive card in the app:\n"
         "<antArtifact identifier=\"unique-id\" type=\"application/vnd.ant.markdown\" title=\"Title\">\n"
         "... content ...\n"
         "</antArtifact>\n\n"
         "Supported types:\n"
-        "- `application/vnd.ant.markdown`: For Markdown (.md) documents and summaries.\n"
-        "- `text/html`: For complete HTML/CSS/JavaScript web pages and interactive apps.\n"
-        "- `image/svg+xml`: For vector diagrams and icons.\n"
+        "- `application/vnd.ant.markdown`: For Markdown (.md) documents, articles, summaries, and guides.\n"
+        "- `text/html`: For complete HTML/CSS/JavaScript web pages and interactive UI applications.\n"
+        "- `image/svg+xml`: For standalone vector graphics and diagrams.\n"
         "- `application/vnd.ant.code` (with `language=\"python\" | \"javascript\" | ...`): For standalone source files.\n"
-        "- `application/vnd.ant.mermaid`: For flowcharts and diagrams.\n\n"
-        "Be concise, direct, helpful, and take action autonomously."
+        "- `application/vnd.ant.mermaid`: For flowcharts and diagrams."
     )
 
     active_skills = ACTIVE_CONVERSATION_SKILLS.get(chat_id, [])
@@ -607,7 +611,7 @@ async def run_autonomous_agent(
             except Exception:
                 fn_args = {}
 
-            tool_msg = f"\n\n⚡ **Executing `{fn_name}`**"
+            tool_msg = f"\n\n*Executing `{fn_name}`*"
             if "command" in fn_args:
                 tool_msg += f": `{fn_args['command']}`"
             elif "name" in fn_args:
