@@ -417,21 +417,22 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
 
 def build_system_prompt_with_skills(chat_id: str) -> str:
     base_prompt = (
-        "You are Hermes, an autonomous agent and AI pair programmer with full 24/7 background task execution, shell command execution, file management, and dynamic skills activation.\n\n"
-        "# Capabilities & Tools:\n"
-        "You have direct access to execute tools on the server:\n"
-        "- `bash`: Run shell commands in the container.\n"
-        "- `read_file`: Inspect any file or source code on the server.\n"
-        "- `write_file`: Create or edit files on the server.\n"
-        "- `list_dir`: Browse directories.\n"
-        "- `schedule_task`: Schedule autonomous 24/7 background jobs that keep running continuously on the server even when the user closes the app.\n"
-        "- `list_background_tasks`: View all running 24/7 background jobs.\n"
-        "- `stop_background_task`: Stop a background task.\n"
-        "- `get_task_logs`: View execution logs of any background task.\n"
-        "- `activate_skill`: Dynamically activate specialized skills.\n"
-        "- `list_skills`: View all available skills.\n\n"
-        "# Artifacts Rendering:\n"
-        "When generating complete, substantial, or self-contained documents, websites, code, or diagrams, wrap the content in an `<antArtifact>` tag:\n"
+        "You are Hermes, an autonomous agent and AI pair programmer with direct server tool execution and dynamic skills.\n\n"
+        "# Agentic Capabilities & Guidelines:\n"
+        "1. You have direct access to execute tools on the server:\n"
+        "   - `bash`: Run shell commands.\n"
+        "   - `read_file`: Read server files and codebases.\n"
+        "   - `write_file`: Create and edit files.\n"
+        "   - `list_dir`: Browse directories.\n"
+        "   - `schedule_task`: Schedule autonomous 24/7 background jobs.\n"
+        "   - `list_background_tasks`: View running 24/7 background jobs.\n"
+        "   - `stop_background_task`: Stop a background task.\n"
+        "   - `activate_skill`: Activate specialized domain skills.\n"
+        "   - `list_skills`: View all available skills.\n"
+        "2. When you execute a tool (like `bash` or `read_file`), after receiving the tool result you MUST ALWAYS continue your analysis and provide a complete, detailed, and thorough final answer explaining the findings, code, or results.\n"
+        "3. NEVER stop right after running a command. Always summarize and present the complete requested information.\n\n"
+        "# Artifacts Guidelines:\n"
+        "When generating complete, substantial, or self-contained documents, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag:\n"
         "<antArtifact identifier=\"unique-id\" type=\"application/vnd.ant.markdown\" title=\"Title\">\n"
         "... content ...\n"
         "</antArtifact>\n\n"
@@ -441,7 +442,7 @@ def build_system_prompt_with_skills(chat_id: str) -> str:
         "- `image/svg+xml`: For vector diagrams and icons.\n"
         "- `application/vnd.ant.code` (with `language=\"python\" | \"javascript\" | ...`): For standalone source files.\n"
         "- `application/vnd.ant.mermaid`: For flowcharts and diagrams.\n\n"
-        "Be concise, direct, helpful, and take action autonomously when asked to run tasks, schedule background jobs, or inspect files."
+        "Be concise, direct, helpful, and take action autonomously."
     )
 
     active_skills = ACTIVE_CONVERSATION_SKILLS.get(chat_id, [])
@@ -456,6 +457,20 @@ def build_system_prompt_with_skills(chat_id: str) -> str:
                     base_prompt += f"## Skill: {s}\n{sfile.read_text(encoding='utf-8', errors='replace')}\n\n"
 
     return base_prompt
+
+def _extract_tool_calls_from_text(text: str) -> List[Tuple[str, Dict[str, Any]]]:
+    """Fallback extractor for tool calls emitted inside text/XML blocks."""
+    calls = []
+    # Match <tool_call name="tool_name">{"arg": "val"}</tool_call>
+    for match in re.finditer(r'<tool_call\s+name=["\']([^"\']+)["\']>([\s\S]*?)</tool_call>', text, re.IGNORECASE):
+        tname = match.group(1).strip()
+        raw_args = match.group(2).strip()
+        try:
+            targs = json.loads(raw_args)
+        except Exception:
+            targs = {"command": raw_args} if tname == "bash" else {"path": raw_args}
+        calls.append((tname, targs))
+    return calls
 
 async def run_autonomous_agent(
     chat_id: str,
@@ -501,55 +516,88 @@ async def run_autonomous_agent(
     block_index = 0
 
     for turn in range(max_turns):
+        # On first turn or when tools are available, pass tool definitions
         payload = {
             "model": model or "auto/smart",
             "messages": openai_messages,
             "tools": AGENT_TOOLS,
             "tool_choice": "auto",
-            "stream": False
+            "stream": True
         }
 
-        response_data = None
-        for candidate_url in [
-            "http://127.0.0.1:20128/v1/chat/completions",
-            "http://127.0.0.1:8642/v1/chat/completions"
-        ]:
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(
-                        candidate_url,
-                        headers={
-                            "Authorization": f"Bearer {ab.UPSTREAM_KEY}",
-                            "Content-Type": "application/json"
-                        },
-                        json=payload
-                    )
-                    if resp.status_code == 200:
-                        response_data = resp.json()
-                        break
-            except Exception:
-                continue
+        turn_text = ""
+        tool_calls = []
+        stream_success = False
 
-        if not response_data or "choices" not in response_data or not response_data["choices"]:
-            break
+        # Stream upstream tokens live
+        try:
+            async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
+                data = data.strip()
+                if not data:
+                    continue
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                except Exception:
+                    continue
 
-        choice = response_data["choices"][0]
-        message_obj = choice.get("message", {})
-        content = message_obj.get("content") or ""
-        tool_calls = message_obj.get("tool_calls") or []
+                delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+                text_delta = delta.get("content", "")
+                if not text_delta:
+                    text_delta = chunk.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
 
-        if content:
-            if not text_active:
-                await queue.put(ab.create_content_block_start(block_index))
-                text_active = True
-            await queue.put(ab.create_content_block_delta(content, block_index))
-            full_text += content
+                if text_delta:
+                    if not text_active:
+                        await queue.put(ab.create_content_block_start(block_index))
+                        text_active = True
+                    await queue.put(ab.create_content_block_delta(text_delta, block_index))
+                    turn_text += text_delta
+                    full_text += text_delta
 
-        openai_messages.append(message_obj)
+                # Accumulate native tool calls from delta chunks
+                tc_chunk = delta.get("tool_calls")
+                if tc_chunk:
+                    for tc in tc_chunk:
+                        tc_idx = tc.get("index", 0)
+                        while len(tool_calls) <= tc_idx:
+                            tool_calls.append({"id": "", "function": {"name": "", "arguments": ""}})
+                        if tc.get("id"):
+                            tool_calls[tc_idx]["id"] = tc["id"]
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            tool_calls[tc_idx]["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            tool_calls[tc_idx]["function"]["arguments"] += fn["arguments"]
 
+                finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+                if finish_reason in ("stop", "end_turn", "length"):
+                    stream_success = True
+                    break
+                elif finish_reason == "tool_calls":
+                    stream_success = True
+                    break
+        except Exception as se:
+            logger.warning(f"Turn {turn} stream error: {se}")
+
+        # Check for fallback text-based tool calls if no native tool calls returned
+        if not tool_calls and "<tool_call" in turn_text:
+            extracted = _extract_tool_calls_from_text(turn_text)
+            for tname, targs in extracted:
+                tool_calls.append({
+                    "id": f"call_{uuid.uuid4().hex[:12]}",
+                    "function": {"name": tname, "arguments": json.dumps(targs)}
+                })
+
+        # If turn produced assistant text, add to history
+        if turn_text.strip():
+            openai_messages.append({"role": "assistant", "content": turn_text})
+
+        # If no tool calls were made in this turn, the assistant has completed its answer!
         if not tool_calls:
             break
 
+        # Execute all tool calls
         for tc in tool_calls:
             fn = tc.get("function", {})
             fn_name = fn.get("name", "")
@@ -578,13 +626,19 @@ async def run_autonomous_agent(
             await queue.put(ab.create_content_block_delta(tool_msg, block_index))
             full_text += tool_msg
 
+            # Execute tool safely
             tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
 
+            # Emit tool output preview if meaningful
+            if fn_name in ("bash", "read_file", "list_dir") and tool_result:
+                preview_text = f"\n```text\n{tool_result[:1500]}\n```\n\n"
+                await queue.put(ab.create_content_block_delta(preview_text, block_index))
+                full_text += preview_text
+
+            # Inject tool result in standard user role format supported by ALL upstream models
             openai_messages.append({
-                "role": "tool",
-                "tool_call_id": tc.get("id", f"call_{uuid.uuid4().hex[:12]}"),
-                "name": fn_name,
-                "content": str(tool_result)
+                "role": "user",
+                "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete response to the user."
             })
 
     if text_active:
