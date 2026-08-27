@@ -117,11 +117,12 @@ import time
 
 # Tiered Cascading Failover Models (Ranked by speed, reliability, and capability)
 HEALTHY_FAILOVER_MODELS = [
-    "auto/coding:fast",
     "antigravity/gemini-2.5-flash-thinking",
+    "auto/coding:fast",
+    "antigravity/gemini-2.5-flash",
     "auto/coding:pro",
-    "auto/best-coding",
     "antigravity/gemini-3.6-flash-low",
+    "auto/best-coding",
     "auto/coding:cheap",
     "auto/coding:reliable",
     "antigravity/gemini-3.1-flash-lite",
@@ -130,7 +131,7 @@ HEALTHY_FAILOVER_MODELS = [
 ]
 
 MODEL_COOLDOWN_MAP: Dict[str, float] = {} # model_name -> expiration timestamp
-ACTIVE_HERMES_MODEL = "auto/coding:fast"
+ACTIVE_HERMES_MODEL = "antigravity/gemini-2.5-flash-thinking"
 CONVERSATION_MODEL_MAP: Dict[str, str] = {} # chat_id -> model_name
 
 def set_active_model(model_name: str, chat_id: Optional[str] = None):
