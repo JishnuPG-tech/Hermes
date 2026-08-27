@@ -32,7 +32,7 @@ UPSTREAM_KEY = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_KEY",
     os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")),
 )
-UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "antigravity/gemini-3.5-flash-low")
+UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "antigravity/gemini-3.6-flash-medium")
 DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-agent")
 
 
@@ -657,4 +657,5 @@ def create_message_stop() -> str:
         "type": "message_stop"
     }
     return f"event: message_stop\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
+
 
