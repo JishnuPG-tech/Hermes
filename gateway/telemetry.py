@@ -1,15 +1,16 @@
 import time
 import json
 import asyncio
+import gzip
 from collections import deque
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter()
 
-# Ring buffer for recent logs (stores last 2000 log events)
-LOG_BUFFER = deque(maxlen=2000)
+# Ring buffer for recent logs (stores last 3000 log events)
+LOG_BUFFER = deque(maxlen=3000)
 CONNECTED_CLIENTS: List[WebSocket] = []
 
 class ConnectionManager:
@@ -46,6 +47,88 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+def push_event(tag: str, level: str, message: str, details: str = "", device: str = "Android"):
+    event = {
+        "id": f"log_{int(time.time()*1000)}_{len(LOG_BUFFER)}",
+        "tag": tag,
+        "level": level.upper(),
+        "message": message,
+        "details": details,
+        "device": device,
+        "timestamp": int(time.time() * 1000),
+        "created_at": time.strftime("%H:%M:%S", time.localtime())
+    }
+    LOG_BUFFER.append(event)
+    asyncio.create_task(manager.broadcast(event))
+
+# ── 1. Native Claude APK Telemetry & Crash Ingestion (/v1/b) ──
+@router.post("/v1/b")
+@router.post("/hermes/v1/b")
+@router.post("/api/event_logging")
+@router.post("/hermes/api/event_logging")
+@router.post("/api/eval_metrics")
+@router.post("/hermes/api/eval_metrics")
+async def ingest_claude_native_telemetry(request: Request):
+    try:
+        raw_body = await request.body()
+        content_encoding = request.headers.get("content-encoding", "").lower()
+        if "gzip" in content_encoding:
+            try:
+                raw_body = gzip.decompress(raw_body)
+            except Exception:
+                pass
+        
+        body_str = raw_body.decode("utf-8", errors="ignore")
+        data = None
+        try:
+            data = json.loads(body_str)
+        except Exception:
+            pass
+
+        if isinstance(data, list):
+            for item in data:
+                parse_and_push_single(item)
+        elif isinstance(data, dict):
+            # Might contain 'events' or 'logs' array
+            if "events" in data and isinstance(data["events"], list):
+                for item in data["events"]:
+                    parse_and_push_single(item)
+            elif "logs" in data and isinstance(data["logs"], list):
+                for item in data["logs"]:
+                    parse_and_push_single(item)
+            elif "batch" in data and isinstance(data["batch"], list):
+                for item in data["batch"]:
+                    parse_and_push_single(item)
+            else:
+                parse_and_push_single(data)
+        else:
+            if body_str.strip():
+                push_event("NATIVE_RAW", "INFO", body_str[:500], body_str)
+    except Exception as e:
+        push_event("TELEMETRY_ERROR", "ERROR", f"Error parsing payload: {e}")
+    
+    return JSONResponse({"status": "ok", "success": True})
+
+def parse_and_push_single(item: Any):
+    if not isinstance(item, dict):
+        push_event("APP_LOG", "INFO", str(item))
+        return
+
+    # Extract tag, event name, message, error
+    event_name = item.get("event") or item.get("event_name") or item.get("name") or item.get("type") or "APP_EVENT"
+    level = "INFO"
+    msg = item.get("message") or item.get("msg") or event_name
+    
+    # Detect errors
+    if "error" in str(item).lower() or item.get("level") in ("error", "ERROR", "err"):
+        level = "ERROR"
+    elif "warn" in str(item).lower() or item.get("level") in ("warn", "WARN"):
+        level = "WARN"
+
+    details = json.dumps(item, indent=2, ensure_ascii=False) if len(item) > 2 else ""
+    push_event(event_name.upper(), level, msg, details)
+
+# ── 2. Direct Telemetry Endpoint ──
 @router.post("/api/telemetry/log")
 @router.post("/hermes/api/telemetry/log")
 @router.post("/telemetry/log")
@@ -56,20 +139,13 @@ async def ingest_log(request: Request):
         body = await request.body()
         data = {"message": body.decode("utf-8", errors="ignore"), "tag": "RAW", "level": "INFO"}
     
-    event = {
-        "id": f"log_{int(time.time()*1000)}_{len(LOG_BUFFER)}",
-        "tag": data.get("tag", "HERMES"),
-        "level": data.get("level", "INFO").upper(),
-        "message": data.get("message", ""),
-        "details": data.get("details", ""),
-        "device": data.get("device", "Android"),
-        "timestamp": data.get("timestamp") or int(time.time() * 1000),
-        "created_at": time.strftime("%H:%M:%S", time.localtime())
-    }
-    
-    LOG_BUFFER.append(event)
-    asyncio.create_task(manager.broadcast(event))
-    return JSONResponse({"status": "ok", "id": event["id"]})
+    push_event(
+        tag=data.get("tag", "HERMES"),
+        level=data.get("level", "INFO"),
+        message=data.get("message", ""),
+        details=data.get("details", "")
+    )
+    return JSONResponse({"status": "ok"})
 
 @router.post("/api/telemetry/batch")
 @router.post("/hermes/api/telemetry/batch")
@@ -82,18 +158,7 @@ async def ingest_batch_logs(request: Request):
         items = []
 
     for item in items:
-        event = {
-            "id": f"log_{int(time.time()*1000)}_{len(LOG_BUFFER)}",
-            "tag": item.get("tag", "HERMES"),
-            "level": item.get("level", "INFO").upper(),
-            "message": item.get("message", ""),
-            "details": item.get("details", ""),
-            "device": item.get("device", "Android"),
-            "timestamp": item.get("timestamp") or int(time.time() * 1000),
-            "created_at": time.strftime("%H:%M:%S", time.localtime())
-        }
-        LOG_BUFFER.append(event)
-        asyncio.create_task(manager.broadcast(event))
+        parse_and_push_single(item)
         
     return JSONResponse({"status": "ok", "count": len(items)})
 
@@ -179,7 +244,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     <span>Hermes Live Log Streamer</span>
                     <span class="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-mono">No-ADB Cloud Ingestion</span>
                 </h1>
-                <p class="text-xs text-gray-400">Zero-lag real-time bytecode telemetry & APK runtime tracker</p>
+                <p class="text-xs text-gray-400">Capturing native telemetry (/v1/b), WebView iframe, and runtime events</p>
             </div>
         </div>
 
@@ -242,14 +307,14 @@ HTML_PAGE = """<!DOCTYPE html>
         <div id="emptyPlaceholder" class="h-full flex flex-col items-center justify-center text-gray-600">
             <i class="fa-solid fa-terminal text-4xl mb-3 text-gray-700"></i>
             <p class="text-sm font-semibold text-gray-500">Awaiting Log Stream from Hermes APK...</p>
-            <p class="text-xs text-gray-600 mt-1">Logs sent from your mobile app via cloud telemetry will appear here lively in real-time.</p>
+            <p class="text-xs text-gray-600 mt-1">Logs sent from your mobile app via /v1/b, telemetry, or WebSocket will appear here lively in real-time.</p>
         </div>
         <div id="logList"></div>
     </main>
 
     <footer class="bg-panelBg/90 border-t border-gray-800 px-6 py-2 flex items-center justify-between text-xs text-gray-500 shrink-0 font-mono">
         <div class="flex items-center space-x-3">
-            <span class="flex items-center space-x-1.5"><i class="fa-solid fa-circle text-[8px] text-emerald-400"></i><span>Endpoint: <code class="text-gray-400 font-bold">POST /api/telemetry/log</code></span></span>
+            <span class="flex items-center space-x-1.5"><i class="fa-solid fa-circle text-[8px] text-emerald-400"></i><span>Endpoints: <code class="text-gray-400 font-bold">POST /v1/b</code> &bull; <code class="text-gray-400 font-bold">POST /api/telemetry/log</code></span></span>
         </div>
         <div>Hermes Diagnostic Console v2.0 • Ultra-Low Latency Engine</div>
     </footer>
