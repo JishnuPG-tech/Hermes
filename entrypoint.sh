@@ -257,11 +257,6 @@ if [ -d "/ignis" ]; then
     done
 fi
 
-# ── Start Nginx :7860 (public edge with compression) ────────────
-log_info "Starting Nginx on port ${PUBLIC_PORT} (gzip compression)"
-nginx -g 'daemon off;' -c /nginx.conf &
-NGINX_PID=$!
-
 # ── Start FastAPI Gateway :8000 ─────────────────────────────────
 log_info "Starting FastAPI Gateway on 127.0.0.1:8000"
 python3 -m uvicorn gateway.main:app \
@@ -269,6 +264,21 @@ python3 -m uvicorn gateway.main:app \
     --port 8000 \
     --workers 1 2>&1 | tee /data/cache/gateway.log &
 FASTAPI_PID=$!
+
+i=0
+while [ $i -lt 30 ]; do
+    if curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
+        log_info "FastAPI Gateway healthy after ${i}s"
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+# ── Start Nginx :7860 (public edge with compression) ────────────
+log_info "Starting Nginx on port ${PUBLIC_PORT} (gzip compression)"
+nginx -g 'daemon off;' -c /nginx.conf &
+NGINX_PID=$!
 
 # ── Graceful Shutdown Trap ──────────────────────────────────────
 cleanup() {

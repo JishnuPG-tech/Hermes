@@ -298,51 +298,54 @@ async def process_telegram_update(update: Dict[str, Any], token: Optional[str] =
     if not text:
         return True
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        if text.startswith("/start"):
-            welcome_msg = (
-                "👋 <b>Welcome to Hermes Agentic AI!</b>\n\n"
-                "I am your autonomous AI pair programmer and assistant, powered by the Hermes Gateway.\n\n"
-                "<b>Available Commands:</b>\n"
-                "• <code>/model</code> - View active model configuration\n"
-                "• <code>/status</code> - Check system & backend health\n"
-                "• <code>/clear</code> - Reset conversation context\n"
-                "• <code>/help</code> - Show this guide\n\n"
-                "Send any message or task to get started!"
-            )
-            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": welcome_msg, "parse_mode": "HTML"})
-            return True
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if text.startswith("/start"):
+                welcome_msg = (
+                    "👋 <b>Welcome to Hermes Agentic AI!</b>\n\n"
+                    "I am your autonomous AI pair programmer and assistant, powered by the Hermes Gateway.\n\n"
+                    "<b>Available Commands:</b>\n"
+                    "• <code>/model</code> - View active model configuration\n"
+                    "• <code>/status</code> - Check system & backend health\n"
+                    "• <code>/clear</code> - Reset conversation context\n"
+                    "• <code>/help</code> - Show this guide\n\n"
+                    "Send any message or task to get started!"
+                )
+                await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": welcome_msg, "parse_mode": "HTML"})
+                return True
 
-        if text.startswith("/status"):
-            status_msg = (
-                "⚡ <b>Hermes System Status:</b>\n\n"
-                "• <b>Backend:</b> OmniRoute + Hermes Core\n"
-                "• <b>Admin:</b> jishnupg2005@gmail.com\n"
-                "• <b>Channels:</b> Telegram [ACTIVE], Gmail [STANDBY]\n"
-                "• <b>Status:</b> All 13 models online\n"
-            )
-            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "HTML"})
-            return True
+            if text.startswith("/status"):
+                status_msg = (
+                    "⚡ <b>Hermes System Status:</b>\n\n"
+                    "• <b>Backend:</b> OmniRoute + Hermes Core\n"
+                    "• <b>Admin:</b> jishnupg2005@gmail.com\n"
+                    "• <b>Channels:</b> Telegram [ACTIVE], Gmail [STANDBY]\n"
+                    "• <b>Status:</b> All 13 models online\n"
+                )
+                await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "HTML"})
+                return True
 
-        try:
-            await client.post(f"{api_base}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
-        except Exception:
-            pass
-
-        reply_text = await generate_agent_response(text, session_id=f"tg_{chat_id}")
-        chunks = format_for_telegram(reply_text)
-
-        for chunk in chunks:
             try:
-                await client.post(
-                    f"{api_base}/sendMessage",
-                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
-                )
+                await client.post(f"{api_base}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
             except Exception:
-                await client.post(
-                    f"{api_base}/sendMessage",
-                    json={"chat_id": chat_id, "text": reply_text[:4000]}
-                )
+                pass
+
+            reply_text = await generate_agent_response(text, session_id=f"tg_{chat_id}")
+            chunks = format_for_telegram(reply_text)
+
+            for chunk in chunks:
+                try:
+                    await client.post(
+                        f"{api_base}/sendMessage",
+                        json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+                    )
+                except Exception:
+                    await client.post(
+                        f"{api_base}/sendMessage",
+                        json={"chat_id": chat_id, "text": reply_text[:4000]}
+                    )
+    except Exception as e:
+        logger.warning(f"Telegram network notification: {e}")
     return True
 
 # ── Telegram Bot Daemon (Fallback Polling) ───────────────────────
