@@ -5,9 +5,9 @@ log_info() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [INFO] [HERMES] $1"; }
 log_error() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [ERROR] [HERMES] $1"; }
 
 # ── Config ──────────────────────────────────────────────────────
-OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-https://jishnupg-opencode-cli.hf.space/v1}"
+OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://127.0.0.1:20128/v1}"
 OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-sk-2e556e0437ee2958-7baf2d-b4133935}"
-HERMES_MODEL="${HERMES_MODEL:-groq/openai/gpt-oss-120b}"
+HERMES_MODEL="${HERMES_MODEL:-auto/smart}"
 HERMES_INTERNAL_PORT="${HERMES_INTERNAL_PORT:-8642}"
 PUBLIC_PORT="${PUBLIC_PORT:-7860}"
 API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"

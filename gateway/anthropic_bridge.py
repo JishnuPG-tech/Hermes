@@ -115,20 +115,20 @@ def system_to_openai(system) -> str:
 
 import time
 
-# Verified Healthy Models (Ranked by live test responsiveness)
+# Verified Healthy Models (Ranked by speed, reliability, and capability)
 HEALTHY_FAILOVER_MODELS = [
-    "groq/openai/gpt-oss-120b",
-    "groq/openai/gpt-oss-20b",
-    "antigravity/gemini-2.5-flash",
-    "antigravity/gemini-2.5-flash-thinking",
-    "antigravity/gemini-3.5-flash-low",
-    "antigravity/gemini-3.1-flash-lite",
+    "auto/smart",
+    "auto/best-fast",
+    "auto/fast",
+    "auto/coding",
     "auto/best-coding",
-    "auto/smart"
+    "auto/best-chat",
+    "antigravity/gemini-2.5-flash-thinking",
+    "groq/llama-3.3-70b-versatile"
 ]
 
 MODEL_COOLDOWN_MAP: Dict[str, float] = {} # model_name -> expiration timestamp
-ACTIVE_HERMES_MODEL = "groq/openai/gpt-oss-120b"
+ACTIVE_HERMES_MODEL = "auto/smart"
 CONVERSATION_MODEL_MAP: Dict[str, str] = {} # chat_id -> model_name
 
 def set_active_model(model_name: str, chat_id: Optional[str] = None):
@@ -166,6 +166,7 @@ def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optiona
     return active + cooled
 
 FALLBACK_URLS = [
+    "http://127.0.0.1:20128/v1/chat/completions",
     UPSTREAM_URL,
     "http://127.0.0.1:8642/v1/chat/completions",
 ]
