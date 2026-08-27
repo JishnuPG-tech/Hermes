@@ -10,6 +10,7 @@ from gateway.hermes_proxy import router as hermes_proxy_router
 from gateway.omniroute import router as omniroute_router
 from gateway.ignis import router as ignis_router
 from gateway.claude_rest_api import router as claude_rest_router
+from gateway.telemetry import router as telemetry_router
 
 app = FastAPI(
     title="Hermes Agent Space Gateway",
@@ -42,6 +43,8 @@ async def normalize_hermes_paths(request: Request, call_next):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/code"):
         cleaned_path = cleaned_path[len("/hermes"):]
+    elif cleaned_path.startswith("/hermes/telemetry") or cleaned_path.startswith("/hermes/live-logs") or cleaned_path.startswith("/hermes/ws"):
+        cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/artifacts"):
         cleaned_path = cleaned_path[len("/hermes"):]
 
@@ -49,6 +52,7 @@ async def normalize_hermes_paths(request: Request, call_next):
     return await call_next(request)
 
 # Order matters: exact routes BEFORE catch-all proxy
+app.include_router(telemetry_router)
 app.include_router(anthropic_router)
 app.include_router(v1_sessions_router)  # v1 Sessions & Code API - MUST be before hermes_proxy catch-all
 app.include_router(claude_rest_router)
