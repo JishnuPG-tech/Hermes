@@ -60,6 +60,14 @@ app.include_router(omniroute_router)
 app.include_router(ignis_router)
 app.include_router(hermes_proxy_router)  # Catch-all proxy for /v1/* and /health/*
 
+@app.on_event("startup")
+async def on_startup():
+    try:
+        from gateway.background_agent import start_all_saved_jobs
+        start_all_saved_jobs()
+    except Exception as e:
+        print(f"Error starting background agent tasks: {e}")
+
 
 # ── Root & Health ───────────────────────────────────────────────
 @app.api_route("/", methods=["GET", "HEAD"])

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, AsyncGenerator
 import httpx
 from gateway import anthropic_bridge as ab
+from gateway import background_agent as bg
 
 # Base workspace directory for safe executions
 DEFAULT_WORKSPACE = Path("/data") if Path("/data").exists() else Path("/tmp")
@@ -162,6 +163,85 @@ AGENT_TOOLS = [
                 "properties": {}
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": "Schedule an autonomous 24/7 background task that runs continuously on the server without needing the APK open.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "A short, descriptive name for the task (e.g., 'Hourly Server Health Check', 'Crypto Scraper', 'Disk Monitor')."
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "The instruction for the agent to execute or the bash command to run on every interval."
+                    },
+                    "interval_seconds": {
+                        "type": "integer",
+                        "description": "How often to run the task in seconds (e.g., 300 for every 5 min, 3600 for hourly, 86400 for daily)."
+                    },
+                    "task_type": {
+                        "type": "string",
+                        "enum": ["agent", "bash"],
+                        "description": "Use 'agent' for autonomous AI reasoning/tool execution, or 'bash' for direct shell script execution."
+                    },
+                    "notify_channels": {
+                        "type": "boolean",
+                        "description": "Set to true to dispatch completion summaries to Telegram / Email when configured."
+                    }
+                },
+                "required": ["name", "instruction"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_background_tasks",
+            "description": "List all persistent 24/7 background tasks running on the server and their status.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "stop_background_task",
+            "description": "Stop and cancel a 24/7 background task by its Task ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The ID of the task to stop (e.g., 'task_a1b2c3d4e5f6')."
+                    }
+                },
+                "required": ["task_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_task_logs",
+            "description": "Retrieve the execution logs of a 24/7 background task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The ID of the task to inspect."
+                    }
+                },
+                "required": ["task_id"]
+            }
+        }
     }
 ]
 
@@ -208,7 +288,6 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
             if fpath.is_dir():
                 return f"Error: '{fpath}' is a directory, not a file."
             content = fpath.read_text(encoding="utf-8", errors="replace")
-            # Limit size for safety
             if len(content) > 30000:
                 content = content[:30000] + "\n... (truncated)"
             return content
@@ -243,7 +322,6 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
 
         elif name == "activate_skill":
             sname = args.get("skill_name", "").strip().lower()
-            # Check builtin skills
             if sname in BUILTIN_SKILLS:
                 skill_info = BUILTIN_SKILLS[sname]
                 if chat_id not in ACTIVE_CONVERSATION_SKILLS:
@@ -252,7 +330,6 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
                     ACTIVE_CONVERSATION_SKILLS[chat_id].append(sname)
                 return f"✓ Skill '{sname}' activated! Description: {skill_info['description']}"
             
-            # Check skills in /data/hermes/skills
             custom_skill_file = SKILLS_DIR / sname / "SKILL.md"
             if custom_skill_file.exists():
                 content = custom_skill_file.read_text(encoding="utf-8", errors="replace")
@@ -269,7 +346,6 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
             for k, v in BUILTIN_SKILLS.items():
                 lines.append(f"- **{k}**: {v['description']}")
             
-            # Check disk skills
             if SKILLS_DIR.exists():
                 disk_skills = [d for d in os.listdir(SKILLS_DIR) if (SKILLS_DIR / d).is_dir()]
                 if disk_skills:
@@ -282,6 +358,58 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
                 lines.append(f"\nCurrently Active in this conversation: {', '.join(active)}")
             return "\n".join(lines)
 
+        elif name == "schedule_task":
+            tname = args.get("name", "Autonomous Task")
+            instruction = args.get("instruction", "")
+            interval = int(args.get("interval_seconds", 300))
+            task_type = args.get("task_type", "agent")
+            notify = bool(args.get("notify_channels", False))
+            
+            job = bg.schedule_job(
+                name=tname,
+                instruction=instruction,
+                interval_seconds=interval,
+                task_type=task_type,
+                notify_channels=notify,
+                chat_id=chat_id
+            )
+            return (
+                f"✓ **24/7 Background Task Registered!**\n"
+                f"- **Task ID**: `{job['id']}`\n"
+                f"- **Name**: {job['name']}\n"
+                f"- **Interval**: Every {interval} seconds ({interval//60} mins)\n"
+                f"- **Type**: {task_type.upper()}\n"
+                f"- **Status**: 🟢 RUNNING 24/7 in background (persisted to server disk)"
+            )
+
+        elif name == "list_background_tasks":
+            jobs = bg.get_all_jobs()
+            if not jobs:
+                return "No 24/7 background tasks currently scheduled."
+            lines = ["**24/7 Persistent Background Tasks on Server:**\n"]
+            for j in jobs:
+                status_emoji = "🟢" if j.get("enabled") and j.get("status") in ("RUNNING", "SCHEDULED", "SUCCESS") else "🔴"
+                lines.append(
+                    f"{status_emoji} **{j.get('name')}** (`{j.get('id')}`)\n"
+                    f"  - Interval: Every {j.get('interval_seconds')}s\n"
+                    f"  - Runs completed: {j.get('run_count', 0)}\n"
+                    f"  - Last run: {j.get('last_run_at') or 'Pending first run'}\n"
+                    f"  - Status: {j.get('status')}\n"
+                )
+            return "\n".join(lines)
+
+        elif name == "stop_background_task":
+            tid = args.get("task_id", "").strip()
+            ok = bg.cancel_job(tid)
+            if ok:
+                return f"✓ Task `{tid}` has been cancelled and stopped."
+            return f"Error: Task `{tid}` not found."
+
+        elif name == "get_task_logs":
+            tid = args.get("task_id", "").strip()
+            logs = bg.get_job_logs(tid)
+            return f"**Logs for `{tid}`:**\n```text\n{logs[-2000:]}\n```"
+
         else:
             return f"Error: Unknown tool '{name}'."
     except Exception as e:
@@ -289,13 +417,17 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
 
 def build_system_prompt_with_skills(chat_id: str) -> str:
     base_prompt = (
-        "You are Hermes, an autonomous agent and AI pair programmer with full shell command execution, file management, and dynamic skills activation.\n\n"
+        "You are Hermes, an autonomous agent and AI pair programmer with full 24/7 background task execution, shell command execution, file management, and dynamic skills activation.\n\n"
         "# Capabilities & Tools:\n"
         "You have direct access to execute tools on the server:\n"
         "- `bash`: Run shell commands in the container.\n"
         "- `read_file`: Inspect any file or source code on the server.\n"
         "- `write_file`: Create or edit files on the server.\n"
         "- `list_dir`: Browse directories.\n"
+        "- `schedule_task`: Schedule autonomous 24/7 background jobs that keep running continuously on the server even when the user closes the app.\n"
+        "- `list_background_tasks`: View all running 24/7 background jobs.\n"
+        "- `stop_background_task`: Stop a background task.\n"
+        "- `get_task_logs`: View execution logs of any background task.\n"
         "- `activate_skill`: Dynamically activate specialized skills.\n"
         "- `list_skills`: View all available skills.\n\n"
         "# Artifacts Rendering:\n"
@@ -309,7 +441,7 @@ def build_system_prompt_with_skills(chat_id: str) -> str:
         "- `image/svg+xml`: For vector diagrams and icons.\n"
         "- `application/vnd.ant.code` (with `language=\"python\" | \"javascript\" | ...`): For standalone source files.\n"
         "- `application/vnd.ant.mermaid`: For flowcharts and diagrams.\n\n"
-        "Be concise, direct, helpful, and take action autonomously when asked to inspect files, execute tasks, or activate skills."
+        "Be concise, direct, helpful, and take action autonomously when asked to run tasks, schedule background jobs, or inspect files."
     )
 
     active_skills = ACTIVE_CONVERSATION_SKILLS.get(chat_id, [])
@@ -337,7 +469,7 @@ async def run_autonomous_agent(
     full_text = ""
     text_active = False
 
-    # Check for direct slash command to activate skill
+    # Check for direct slash commands
     skill_match = re.search(r'(?:^/skill\s+|activate\s+(?:the\s+)?skill\s+|use\s+(?:the\s+)?skill\s+)([a-zA-Z0-9_\-]+)', prompt, re.IGNORECASE)
     if skill_match:
         sname = skill_match.group(1).strip().lower()
@@ -430,10 +562,14 @@ async def run_autonomous_agent(
             tool_msg = f"\n\n⚡ **Executing `{fn_name}`**"
             if "command" in fn_args:
                 tool_msg += f": `{fn_args['command']}`"
+            elif "name" in fn_args:
+                tool_msg += f": `{fn_args['name']}`"
             elif "path" in fn_args:
                 tool_msg += f": `{fn_args['path']}`"
             elif "skill_name" in fn_args:
                 tool_msg += f": `{fn_args['skill_name']}`"
+            elif "task_id" in fn_args:
+                tool_msg += f": `{fn_args['task_id']}`"
             tool_msg += "...\n"
 
             if not text_active:
