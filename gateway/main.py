@@ -39,7 +39,7 @@ async def normalize_hermes_paths(request: Request, call_next):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/mobile"):
         cleaned_path = cleaned_path[len("/hermes"):]
-    elif cleaned_path.startswith("/hermes/v1/code") or cleaned_path.startswith("/hermes/v1/sessions"):
+    elif cleaned_path.startswith("/hermes/v1/code") or cleaned_path.startswith("/hermes/v1/sessions") or cleaned_path.startswith("/hermes/v1/b"):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/code"):
         cleaned_path = cleaned_path[len("/hermes"):]
