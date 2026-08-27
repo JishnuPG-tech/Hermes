@@ -506,8 +506,12 @@ ORG_OBJ = {
     "id": "org_0123456789abcdef",
     "uuid": "org_0123456789abcdef",
     "name": "Hermes Admin Team",
-    "settings": {"billing_tier": "default"},
-    "capabilities": ["chat", "claude_pro", "claude_max", "raven"],
+    "settings": {
+        "billing_tier": "default",
+        "model_selector_enabled": True,
+        "custom_models_enabled": True
+    },
+    "capabilities": ["chat", "claude_pro", "claude_max", "raven", "model_selector", "model_selection", "pro_enabled", "artifacts", "artifacts_v2"],
     "claude_ai_bootstrap_models_config": MODELS_CATALOG,
     "raven_type": None,
     "rate_limit_tier": "claude_max",
@@ -587,9 +591,15 @@ async def app_start_response(org_id: Optional[str] = None):
                 "artifacts_v2": {"defaultValue": True},
                 "artifacts_editor": {"defaultValue": True},
                 "model_selector_enabled": {"defaultValue": True},
+                "model_picker_enabled": {"defaultValue": True},
+                "chat_model_selector": {"defaultValue": True},
+                "model_selector": {"defaultValue": True},
+                "model_selection": {"defaultValue": True},
                 "pro_enabled": {"defaultValue": True},
                 "premium_enabled": {"defaultValue": True},
-                "subscription_active": {"defaultValue": True}
+                "subscription_active": {"defaultValue": True},
+                "claude_pro": {"defaultValue": True},
+                "claude_max": {"defaultValue": True}
             }
         },
         "server_localizations": {},
@@ -598,6 +608,9 @@ async def app_start_response(org_id: Optional[str] = None):
                 {"feature": "artifacts", "status": "available"},
                 {"feature": "artifacts_v2", "status": "available"},
                 {"feature": "artifacts_editor", "status": "available"},
+                {"feature": "model_selector_enabled", "status": "available"},
+                {"feature": "model_picker_enabled", "status": "available"},
+                {"feature": "chat_model_selector", "status": "available"},
                 {"feature": "web_search", "status": "available"},
                 {"feature": "saffron", "status": "available"},
                 {"feature": "wiggle", "status": "available"},
@@ -613,18 +626,31 @@ async def app_start_response(org_id: Optional[str] = None):
             ],
             "account_features": [
                 {"feature": "artifacts", "status": "available"},
+                {"feature": "model_selector_enabled", "status": "available"},
                 {"feature": "web_search", "status": "available"},
                 {"feature": "chat", "status": "available"},
                 {"feature": "claude_code_web", "status": "available"}
             ]
         },
         "personalized_greeting": [],
-        "statsig": {"flags": {}, "experiments": {}},
-        "active_flags": ["claude_3_5_sonnet", "claude_3_opus", "artifacts", "artifacts_v2", "memory", "latex", "model_selector_enabled", "pro_enabled", "premium_enabled"],
+        "statsig": {
+            "flags": {
+                "model_selector_enabled": True,
+                "model_picker_enabled": True,
+                "chat_model_selector": True,
+                "pro_enabled": True,
+                "artifacts": True,
+                "artifacts_v2": True
+            },
+            "experiments": {}
+        },
+        "active_flags": ["claude_3_5_sonnet", "claude_3_opus", "artifacts", "artifacts_v2", "memory", "latex", "model_selector_enabled", "model_picker_enabled", "chat_model_selector", "pro_enabled", "premium_enabled"],
         "flags": {
             "artifacts": True,
             "artifacts_v2": True,
             "model_selector_enabled": True,
+            "model_picker_enabled": True,
+            "chat_model_selector": True,
             "pro_enabled": True,
             "premium_enabled": True,
             "subscription_active": True
