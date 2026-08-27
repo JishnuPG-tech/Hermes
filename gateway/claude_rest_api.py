@@ -64,15 +64,16 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
                 if isinstance(cb, dict) and cb.get("type") == "text":
                     full_body += "\n" + cb.get("text", "")
         
-        # 1. Parse explicit <antArtifact> tags
+        # 1. Parse explicit <antArtifact> tags with flexible single/double quote matching
         for match in re.finditer(r'<antArtifact\s+([^>]+)>([\s\S]*?)(?:</antArtifact>|$)', full_body):
             attrs_str = match.group(1)
             content_str = match.group(2).strip()
-            attrs = dict(re.findall(r'([a-zA-Z0-9_]+)="([^"]+)"', attrs_str))
+            raw_attrs = re.findall(r'([a-zA-Z0-9_]+)=["\']([^"\']+)["\']', attrs_str)
+            attrs = {k.lower(): v for k, v in raw_attrs}
             art_id = attrs.get("identifier") or attrs.get("id") or str(uuid.uuid4())
             if art_id not in seen_ids:
                 seen_ids.add(art_id)
-                art_type = attrs.get("type") or attrs.get("artifactType") or "application/vnd.ant.markdown"
+                art_type = attrs.get("type") or attrs.get("artifacttype") or "application/vnd.ant.markdown"
                 artifacts.append({
                     "id": art_id,
                     "uuid": art_id,
@@ -97,15 +98,15 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
 
         # 2. Synthesize artifacts for standalone HTML / SVG / Markdown blocks if not already wrapped
         if not artifacts:
-            for match in re.finditer(r'```([a-zA-Z0-9_-]+)?\s*\n([\s\S]{120,})?```', full_body):
+            for match in re.finditer(r'```([a-zA-Z0-9_-]+)?\s*\n([\s\S]{60,})?```', full_body):
                 lang = (match.group(1) or "").lower()
                 code = (match.group(2) or "").strip()
-                if lang in ("html", "svg", "markdown", "md") or len(code) > 200:
+                if lang in ("html", "svg", "markdown", "md") or len(code) > 100:
                     art_id = f"art_{hash(code[:50]) & 0xffffffff:08x}"
                     if art_id not in seen_ids:
                         seen_ids.add(art_id)
                         art_type = "text/html" if lang == "html" else ("image/svg+xml" if lang == "svg" else "application/vnd.ant.markdown")
-                        title = "Preview" if lang in ("html", "svg") else "Document"
+                        title = "HTML Preview" if lang == "html" else ("SVG Graphic" if lang == "svg" else "Document")
                         artifacts.append({
                             "id": art_id,
                             "uuid": art_id,
@@ -130,11 +131,28 @@ def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
 
     return artifacts
 
+def _extract_render_values(chat_id: str) -> Dict[str, Any]:
+    artifacts = _extract_artifacts_from_conv(chat_id)
+    render_map = {}
+    for a in artifacts:
+        art_id = a.get("identifier") or a.get("id") or a.get("uuid")
+        if art_id:
+            render_map[art_id] = {
+                "type": a.get("type", "application/vnd.ant.markdown"),
+                "title": a.get("title", "Document"),
+                "content": a.get("content", ""),
+                "language": a.get("language", ""),
+                "artifact_uuid": a.get("artifact_uuid", art_id),
+                "version_uuid": a.get("version_uuid", str(uuid.uuid4()))
+            }
+    return render_map
+
 def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
     msgs = conv.get("chat_messages", [])
     leaf_uuid = msgs[-1]["uuid"] if msgs else None
     chat_id = conv.get("uuid")
     artifacts = _extract_artifacts_from_conv(chat_id)
+    render_vals = _extract_render_values(chat_id)
     return {
         "uuid": chat_id,
         "name": conv.get("name", "Chat"),
@@ -148,7 +166,8 @@ def _build_conv_response(conv: Dict[str, Any]) -> Dict[str, Any]:
         "is_starred": conv.get("is_starred", False),
         "current_leaf_message_uuid": leaf_uuid,
         "chat_messages": msgs,
-        "artifacts": artifacts
+        "artifacts": artifacts,
+        "render_values": render_vals
     }
 
 # 1. Models Catalog (Full ModelOption array matching Organization.claude_ai_bootstrap_models_config)
@@ -1490,12 +1509,32 @@ def _create_version_record(art: Optional[Dict[str, Any]], artifact_id: str, chat
         "markdown": content
     }
 
+@router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/render_values")
+@router.get("/organizations/{org_id}/chat_conversations/{chat_id}/render_values")
+@router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/render_values")
+async def get_conversation_render_values_endpoint(org_id: str, chat_id: str):
+    return _extract_render_values(chat_id)
+
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 @router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts")
 async def list_conversation_artifacts(org_id: str, chat_id: str):
     artifacts = _extract_artifacts_from_conv(chat_id)
     return {"artifacts": artifacts, "data": artifacts}
+
+@router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions/latest")
+@router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions/latest")
+@router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions/current")
+@router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions/current")
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/versions/latest")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/versions/latest")
+@router.get("/api/organizations/{org_id}/artifacts/{artifact_id}/versions/current")
+@router.get("/organizations/{org_id}/artifacts/{artifact_id}/versions/current")
+@router.get("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}/versions/latest")
+async def get_artifact_latest_version_endpoint(org_id: str, artifact_id: str, chat_id: Optional[str] = None):
+    cid, art = _find_artifact_across_all(artifact_id)
+    rec = _create_version_record(art, artifact_id, chat_id=cid or chat_id)
+    return rec
 
 @router.get("/api/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
 @router.get("/organizations/{org_id}/chat_conversations/{chat_id}/artifacts/{artifact_id}")
@@ -1976,6 +2015,25 @@ _SANDBOX_HTML = r"""<!DOCTYPE html>
             }
         }, 200);
         setTimeout(function() { clearInterval(readyTimer); }, 15000);
+
+        // Auto-fetch latest artifact if host postMessage is delayed
+        setTimeout(async function() {
+            if (contentReceived) return;
+            try {
+                var params = new URLSearchParams(window.location.search);
+                var artId = params.get('identifier') || params.get('id') || params.get('artifact_id') || params.get('runtime_id');
+                var fetchUrl = artId ? ('/api/organizations/org_0123456789abcdef/artifacts/' + artId) : '/api/organizations/org_0123456789abcdef/user_artifacts';
+                var resp = await fetch(fetchUrl);
+                if (resp.ok) {
+                    var data = await resp.json();
+                    if (data.artifacts && data.artifacts.length > 0) {
+                        renderContent(data.artifacts[0]);
+                    } else if (data.content || data.markdown || data.text) {
+                        renderContent(data);
+                    }
+                }
+            } catch(e) {}
+        }, 350);
     </script>
 </body>
 </html>"""
