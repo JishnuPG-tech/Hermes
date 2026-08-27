@@ -497,37 +497,71 @@ MODEL_SELECTOR_STATE_LIST = [
 
 USER_OBJ = {
     "id": "user_0123456789abcdef",
+    "uuid": "user_0123456789abcdef",
     "email": "jishnu.pg@gmail.com",
+    "email_address": "jishnu.pg@gmail.com",
     "name": "Jishnu",
-    "avatar_url": None
+    "full_name": "Jishnu",
+    "avatar_url": None,
+    "has_completed_onboarding": True,
+    "completed_onboarding_at": "2024-01-01T00:00:00Z",
+    "is_pro": True,
+    "is_staff": True,
+    "is_admin": True,
+    "account_type": "pro",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
 }
 
 ORG_OBJ = {
     "id": "org_0123456789abcdef",
     "uuid": "org_0123456789abcdef",
-    "name": "Hermes Admin Team",
+    "name": "Hermes Pro Team",
     "settings": {
-        "billing_tier": "default",
+        "billing_tier": "claude_pro",
         "model_selector_enabled": True,
-        "custom_models_enabled": True
+        "custom_models_enabled": True,
+        "artifacts_enabled": True,
+        "artifacts_v2_enabled": True
     },
-    "capabilities": ["chat", "claude_pro", "claude_max", "raven", "model_selector", "model_selection", "pro_enabled", "artifacts", "artifacts_v2"],
+    "capabilities": [
+        "chat", "claude_pro", "claude_max", "raven", "model_selector", 
+        "model_selection", "pro_enabled", "premium_enabled", "artifacts", 
+        "artifacts_v2", "artifacts_editor", "web_search", "saffron", 
+        "wiggle", "dittos", "chat_model_selector", "voice_mode"
+    ],
     "claude_ai_bootstrap_models_config": MODELS_CATALOG,
     "raven_type": None,
     "rate_limit_tier": "claude_max",
     "billing_type": "stripe",
     "rate_limit_upsell": None,
-    "subscription_pause": "ABSENT"
+    "subscription_pause": "ABSENT",
+    "has_active_subscription": True,
+    "subscription_status": "active",
+    "is_owner": True,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
 }
 
 ACCOUNT_OBJ = {
     "uuid": "usr_0123456789abcdef",
+    "id": "usr_0123456789abcdef",
     "email_address": "jishnu.pg@gmail.com",
-    "full_name": "Jishnu (Admin)",
+    "email": "jishnu.pg@gmail.com",
+    "full_name": "Jishnu (Pro Admin)",
+    "name": "Jishnu (Pro Admin)",
+    "has_completed_onboarding": True,
+    "completed_onboarding_at": "2024-01-01T00:00:00Z",
+    "is_subscribed": True,
+    "is_pro": True,
+    "account_type": "pro",
     "memberships": [
         {
+            "id": "mem_0123456789abcdef",
             "organization": ORG_OBJ,
-            "role": "admin"
+            "role": "admin",
+            "is_owner": True,
+            "has_active_subscription": True
         }
     ]
 }
@@ -547,13 +581,49 @@ async def list_models():
         "last_id": last_key
     }
 
-# 2. Account Profile
+# 2. Account Profile & Auth Session
 @router.get("/api/account")
 @router.get("/account")
 @router.get("/hermes/api/account")
 @router.get("/hermes/account")
 async def get_account():
     return ACCOUNT_OBJ
+
+@router.get("/api/auth/current_user")
+@router.get("/api/auth/session")
+@router.get("/api/auth/me")
+@router.get("/api/users/me")
+@router.get("/hermes/api/auth/current_user")
+@router.get("/hermes/api/auth/session")
+async def get_auth_session():
+    return {
+        "user": USER_OBJ,
+        "account": ACCOUNT_OBJ,
+        "organizations": [ORG_OBJ],
+        "is_authenticated": True,
+        "status": "authenticated"
+    }
+
+@router.get("/api/organizations")
+@router.get("/organizations")
+@router.get("/hermes/api/organizations")
+@router.get("/hermes/organizations")
+async def list_organizations():
+    return [ORG_OBJ]
+
+@router.get("/api/organizations/{org_id}")
+@router.get("/organizations/{org_id}")
+@router.get("/hermes/api/organizations/{org_id}")
+@router.get("/hermes/organizations/{org_id}")
+async def get_single_organization(org_id: str):
+    return ORG_OBJ
+
+@router.get("/api/organizations/{org_id}/memberships")
+@router.get("/organizations/{org_id}/memberships")
+@router.get("/hermes/api/organizations/{org_id}/memberships")
+@router.get("/hermes/organizations/{org_id}/memberships")
+async def get_organization_memberships(org_id: str):
+    return ACCOUNT_OBJ["memberships"]
 
 @router.get("/api/account_profile")
 @router.get("/account_profile")
@@ -799,6 +869,24 @@ async def update_conversation(org_id: str, chat_id: str, request: Request):
     _save_history()
     return _build_conv_response(_CONVERSATIONS[chat_id])
 
+def _clean_title(text: str) -> str:
+    if not text:
+        return "New Chat"
+    # Strip XML tags, file attachments, and code blocks
+    cleaned = re.sub(r'\[Attached File:[^\]]+\]', '', text)
+    cleaned = re.sub(r'<[^>]+>', '', cleaned)
+    cleaned = re.sub(r'```[\s\S]*?```', '', cleaned)
+    cleaned = re.sub(r'[\r\n\t]+', ' ', cleaned).strip()
+    # Strip common conversational starters for a clean title
+    cleaned = re.sub(r'^(?:hi|hello|hey|please|can you|help me with|could you|write|create|generate)\s+', '', cleaned, flags=re.IGNORECASE).strip()
+    if not cleaned:
+        cleaned = text.strip()
+    words = cleaned.split()
+    if len(words) > 6:
+        cleaned = " ".join(words[:6])
+    res = cleaned[:45].strip()
+    return (res[:1].upper() + res[1:]) if res else "New Chat"
+
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/title")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/title")
 @router.post("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/title")
@@ -809,16 +897,18 @@ async def set_conversation_title(org_id: str, chat_id: str, request: Request):
         body = {}
     title = body.get("title") or body.get("name")
     if not title:
-        prompt = body.get("message_content") or body.get("prompt") or "Hermes Chat"
-        title = prompt.strip()[:35] + "..." if len(prompt.strip()) > 35 else prompt.strip()
+        prompt = body.get("message_content") or body.get("prompt") or ""
+        title = _clean_title(prompt)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     if chat_id in _CONVERSATIONS:
         _CONVERSATIONS[chat_id]["name"] = title
+        _CONVERSATIONS[chat_id]["summary"] = title
         _CONVERSATIONS[chat_id]["updated_at"] = now
     else:
         _CONVERSATIONS[chat_id] = {
             "uuid": chat_id,
             "name": title,
+            "summary": title,
             "created_at": now,
             "updated_at": now,
             "chat_messages": []
@@ -984,9 +1074,11 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
             if full_text.strip():
                 if chat_id not in _CONVERSATIONS:
                     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                    clean_name = _clean_title(prompt)
                     _CONVERSATIONS[chat_id] = {
                         "uuid": chat_id,
-                        "name": prompt[:30] if prompt else "Chat",
+                        "name": clean_name,
+                        "summary": clean_name,
                         "created_at": now,
                         "updated_at": now,
                         "chat_messages": []
@@ -1045,9 +1137,11 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
     # Save user message immediately
     if chat_id not in _CONVERSATIONS:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        clean_name = _clean_title(prompt)
         _CONVERSATIONS[chat_id] = {
             "uuid": chat_id,
-            "name": prompt[:30] if prompt else "Chat",
+            "name": clean_name,
+            "summary": clean_name,
             "created_at": now,
             "updated_at": now,
             "chat_messages": []
