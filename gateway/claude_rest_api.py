@@ -495,13 +495,16 @@ MODEL_SELECTOR_STATE_LIST = [
     }
 ]
 
+ADMIN_EMAIL = "jishnupg2005@gmail.com"
+ADMIN_NAME = "Jishnu PG (Super Admin)"
+
 USER_OBJ = {
     "id": "user_0123456789abcdef",
     "uuid": "user_0123456789abcdef",
-    "email": "jishnu.pg@gmail.com",
-    "email_address": "jishnu.pg@gmail.com",
-    "name": "Jishnu",
-    "full_name": "Jishnu",
+    "email": ADMIN_EMAIL,
+    "email_address": ADMIN_EMAIL,
+    "name": ADMIN_NAME,
+    "full_name": ADMIN_NAME,
     "avatar_url": None,
     "has_completed_onboarding": True,
     "completed_onboarding_at": "2024-01-01T00:00:00Z",
@@ -516,7 +519,7 @@ USER_OBJ = {
 ORG_OBJ = {
     "id": "org_0123456789abcdef",
     "uuid": "org_0123456789abcdef",
-    "name": "Hermes Pro Team",
+    "name": "Hermes Pro Admin Team",
     "settings": {
         "billing_tier": "claude_pro",
         "model_selector_enabled": True,
@@ -546,10 +549,10 @@ ORG_OBJ = {
 ACCOUNT_OBJ = {
     "uuid": "usr_0123456789abcdef",
     "id": "usr_0123456789abcdef",
-    "email_address": "jishnu.pg@gmail.com",
-    "email": "jishnu.pg@gmail.com",
-    "full_name": "Jishnu (Pro Admin)",
-    "name": "Jishnu (Pro Admin)",
+    "email_address": ADMIN_EMAIL,
+    "email": ADMIN_EMAIL,
+    "full_name": ADMIN_NAME,
+    "name": ADMIN_NAME,
     "has_completed_onboarding": True,
     "completed_onboarding_at": "2024-01-01T00:00:00Z",
     "is_subscribed": True,
@@ -603,6 +606,191 @@ async def get_auth_session():
         "is_authenticated": True,
         "status": "authenticated"
     }
+
+@router.post("/api/auth/login")
+@router.post("/api/auth/login/email")
+@router.post("/auth/login")
+@router.post("/hermes/api/auth/login")
+async def login_endpoint(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    email = body.get("email") or ADMIN_EMAIL
+    pwd = body.get("password") or ""
+    session_token = f"session_key_{uuid.uuid4().hex}"
+    
+    resp = JSONResponse(content={
+        "status": "ok",
+        "message": "Authenticated successfully",
+        "session_token": session_token,
+        "user": USER_OBJ,
+        "account": ACCOUNT_OBJ,
+        "organizations": [ORG_OBJ]
+    })
+    resp.set_cookie("sessionKey", session_token, max_age=86400*30, httponly=True, samesite="lax")
+    return resp
+
+@router.post("/api/auth/send_code")
+@router.post("/auth/send_code")
+@router.post("/hermes/api/auth/send_code")
+async def send_code_endpoint(request: Request):
+    return {"status": "ok", "message": "Verification code sent to your email"}
+
+@router.post("/api/auth/verify_code")
+@router.post("/auth/verify_code")
+@router.post("/hermes/api/auth/verify_code")
+async def verify_code_endpoint(request: Request):
+    session_token = f"session_key_{uuid.uuid4().hex}"
+    resp = JSONResponse(content={
+        "status": "ok",
+        "session_token": session_token,
+        "user": USER_OBJ,
+        "account": ACCOUNT_OBJ,
+        "organizations": [ORG_OBJ]
+    })
+    resp.set_cookie("sessionKey", session_token, max_age=86400*30, httponly=True, samesite="lax")
+    return resp
+
+@router.post("/api/auth/logout")
+@router.post("/auth/logout")
+@router.post("/hermes/api/auth/logout")
+async def logout_endpoint():
+    resp = JSONResponse(content={"status": "ok", "message": "Logged out"})
+    resp.delete_cookie("sessionKey")
+    return resp
+
+_LOGIN_PAGE_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude APK & Hermes - Admin Login</title>
+    <style>
+        :root {
+            --bg-main: #141416;
+            --bg-card: #1e1f23;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --accent-orange: #d97706;
+            --border: #2e3038;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        body {
+            margin: 0;
+            padding: 24px 16px;
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 90vh;
+        }
+        .login-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 32px 28px;
+            max-width: 420px;
+            width: 100%;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+        }
+        .logo { font-size: 32px; text-align: center; margin-bottom: 12px; }
+        h1 { font-size: 22px; margin: 0 0 8px 0; text-align: center; font-weight: 600; }
+        p { color: var(--text-secondary); font-size: 14px; text-align: center; margin: 0 0 24px 0; }
+        .input-group { margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; }
+        label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
+        input {
+            background-color: #141416;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 14px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+        }
+        input:focus { border-color: var(--accent-orange); }
+        button {
+            width: 100%;
+            padding: 12px;
+            background-color: var(--accent-orange);
+            border: none;
+            border-radius: 8px;
+            color: #fff;
+            font-weight: 600;
+            font-size: 15px;
+            cursor: pointer;
+            margin-top: 8px;
+        }
+        button:hover { background-color: #b45309; }
+        .status {
+            display: none;
+            padding: 10px 14px;
+            border-radius: 8px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            text-align: center;
+        }
+        .status.success { display: block; background-color: rgba(16, 185, 129, 0.15); color: #34d399; }
+        .badge-row { display: flex; justify-content: center; gap: 8px; margin-top: 20px; }
+        .badge { font-size: 11px; padding: 4px 8px; background-color: rgba(217,119,6,0.2); color: #f59e0b; border-radius: 4px; font-weight: 700; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="logo">⚡</div>
+        <h1>Claude Pro Admin Login</h1>
+        <p>Sign in to configure Claude APK and backend reasoning models.</p>
+        <div id="statusBox" class="status"></div>
+        <div class="input-group">
+            <label>Gmail Address</label>
+            <input type="email" id="emailInput" value="jishnupg2005@gmail.com">
+        </div>
+        <div class="input-group">
+            <label>Password</label>
+            <input type="password" id="pwdInput" placeholder="Enter password">
+        </div>
+        <button onclick="handleLogin()">Sign In as Super Admin</button>
+        <div class="badge-row">
+            <span class="badge">CLAUDE PRO</span>
+            <span class="badge">SUPER ADMIN</span>
+            <span class="badge">UNLOCKED</span>
+        </div>
+    </div>
+    <script>
+        async function handleLogin() {
+            var email = document.getElementById('emailInput').value.trim();
+            var pwd = document.getElementById('pwdInput').value.trim();
+            var sb = document.getElementById('statusBox');
+            try {
+                var res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({email: email, password: pwd})
+                });
+                var d = await res.json();
+                if (res.ok) {
+                    sb.className = 'status success';
+                    sb.innerText = 'Authenticated as ' + email + ' (Pro Admin)!';
+                    setTimeout(function() { window.location.href = '/settings/models'; }, 1000);
+                }
+            } catch(e) {
+                sb.className = 'status';
+                sb.style.display = 'block';
+                sb.style.backgroundColor = 'rgba(239, 68, 68, 0.15)';
+                sb.style.color = '#f87171';
+                sb.innerText = 'Login error: ' + e.message;
+            }
+        }
+    </script>
+</body>
+</html>"""
+
+@router.get("/login", response_class=HTMLResponse)
+@router.get("/auth/login", response_class=HTMLResponse)
+@router.get("/hermes/login", response_class=HTMLResponse)
+async def login_page():
+    return HTMLResponse(content=_LOGIN_PAGE_HTML, headers={"Content-Type": "text/html; charset=utf-8"})
 
 @router.get("/api/organizations")
 @router.get("/organizations")
@@ -1245,16 +1433,34 @@ def _create_version_record(art: Optional[Dict[str, Any]], artifact_id: str, chat
         created_at = art.get("created_at") or now_ts
         updated_at = art.get("updated_at") or now_ts
         msg_uuid = art.get("message_uuid") or str(uuid.uuid4())
+        conv_id = art.get("chat_conversation_uuid") or chat_id or ""
     else:
+        conv = _CONVERSATIONS.get(chat_id or artifact_id)
+        if conv and conv.get("chat_messages"):
+            for m in reversed(conv["chat_messages"]):
+                if m.get("sender") == "assistant" and m.get("text"):
+                    content = m.get("text")
+                    title = conv.get("name") or "Document"
+                    break
+            else:
+                content = "# Document Preview\nReady to render content."
+                title = "Document"
+            art_type = "application/vnd.ant.markdown"
+            lang = "markdown"
+            msg_uuid = conv["chat_messages"][-1].get("uuid", str(uuid.uuid4()))
+            conv_id = conv.get("uuid", artifact_id)
+        else:
+            content = "# Preview Document\nReady to render content."
+            title = "Document"
+            art_type = "application/vnd.ant.markdown"
+            lang = "markdown"
+            msg_uuid = str(uuid.uuid4())
+            conv_id = chat_id or ""
+
         art_uuid = artifact_id
         ver_uuid = str(uuid.uuid4())
-        art_type = "application/vnd.ant.markdown"
-        title = "Document"
-        lang = ""
-        content = ""
         created_at = now_ts
         updated_at = now_ts
-        msg_uuid = str(uuid.uuid4())
 
     return {
         "id": art_uuid,
@@ -1264,7 +1470,7 @@ def _create_version_record(art: Optional[Dict[str, Any]], artifact_id: str, chat
         "version_index": 1,
         "version": 1,
         "message_uuid": msg_uuid,
-        "chat_conversation_uuid": chat_id or "",
+        "chat_conversation_uuid": conv_id,
         "identifier": art_uuid,
         "type": art_type,
         "artifact_type": art_type,
