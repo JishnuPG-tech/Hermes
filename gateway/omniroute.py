@@ -73,13 +73,29 @@ def fixup_omniroute_html(html: str) -> str:
     return html
 
 
+OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
+
 async def handle_omniroute_proxy(request: Request, path: str, html_fixup=None):
     """Dispatch to OmniRoute with Referer-aware routing."""
     req_path = request.url.path
 
-    # Referer-aware: dashboard UI requests always go to :20128
-    if _is_dashboard_referer(request):
-        target = f"http://127.0.0.1:{OMNIROUTE_PORT}{req_path}"
+    # Check if this is an API call (e.g. /v1/chat/completions, /v1/models, /v1beta/...)
+    is_api_call = (
+        req_path.startswith("/v1/")
+        or req_path.startswith("/api/v1/")
+        or req_path.startswith("/v1beta/")
+        or req_path in ("/v1", "/api/v1", "/v1beta")
+    )
+
+    if is_api_call:
+        subpath = req_path
+        if subpath.startswith("/api/v1"):
+            subpath = subpath[len("/api"):]
+        if not subpath.startswith("/v1") and not subpath.startswith("/v1beta"):
+            subpath = "/v1" + subpath
+        
+        base_clean = OMNIROUTE_BASE_URL[:-3] if OMNIROUTE_BASE_URL.endswith("/v1") else OMNIROUTE_BASE_URL
+        target = f"{base_clean}{subpath}"
     else:
         target = f"http://127.0.0.1:{OMNIROUTE_PORT}{req_path}"
 
