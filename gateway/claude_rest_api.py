@@ -7,9 +7,11 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import httpx
 from fastapi import APIRouter, Request, Header, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, PlainTextResponse
 from gateway import anthropic_bridge as ab
+from gateway import channels_manager as cm
 
 logger = logging.getLogger("claude_rest_api")
 router = APIRouter()
