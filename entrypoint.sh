@@ -7,7 +7,7 @@ log_error() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [ERROR] [HERMES] $1"; }
 # ── Config ──────────────────────────────────────────────────────
 OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-https://jishnupg-opencode-cli.hf.space/v1}"
 OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-sk-2e556e0437ee2958-7baf2d-b4133935}"
-HERMES_MODEL="${HERMES_MODEL:-antigravity/gemini-3.6-flash-medium}"
+HERMES_MODEL="${HERMES_MODEL:-antigravity/gemini-3.5-flash-low}"
 HERMES_INTERNAL_PORT="${HERMES_INTERNAL_PORT:-8642}"
 PUBLIC_PORT="${PUBLIC_PORT:-7860}"
 API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"
@@ -350,6 +350,7 @@ while true; do
         sleep 2
     fi
 done
+
 
 
 
