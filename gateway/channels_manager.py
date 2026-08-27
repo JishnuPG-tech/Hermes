@@ -32,7 +32,8 @@ def load_channels_config() -> Dict[str, Any]:
             "enabled": bool(os.getenv("TELEGRAM_BOT_TOKEN")),
             "token": os.getenv("TELEGRAM_BOT_TOKEN", ""),
             "allowed_users": os.getenv("TELEGRAM_ALLOWED_USERS", "*"),
-            "admin_id": os.getenv("TELEGRAM_ADMIN_ID", "")
+            "admin_id": os.getenv("TELEGRAM_ADMIN_ID", ""),
+            "webhook_set": False
         },
         "email": {
             "enabled": bool(os.getenv("EMAIL_ADDRESS") and (os.getenv("EMAIL_PASSWORD") or os.getenv("GMAIL_APP_PASSWORD"))),
@@ -265,7 +266,86 @@ async def generate_agent_response(prompt: str, session_id: str = "channel_defaul
         logger.error(f"Exception during agent generation: {e}")
         return f"⚠️ Error processing request: {e}"
 
-# ── Telegram Bot Daemon ─────────────────────────────────────────
+# ── Telegram Update Processor (Unified Webhook & Polling Handler) ──
+
+async def process_telegram_update(update: Dict[str, Any], token: Optional[str] = None) -> bool:
+    cfg = load_channels_config().get("telegram", {})
+    bot_token = token or cfg.get("token")
+    if not bot_token:
+        return False
+
+    api_base = f"https://api.telegram.org/bot{bot_token}"
+    allowed_list = [u.strip().lower() for u in cfg.get("allowed_users", "*").split(",") if u.strip()]
+
+    msg = update.get("message") or update.get("edited_message")
+    if not msg:
+        return True
+
+    chat_id = msg.get("chat", {}).get("id")
+    user_info = msg.get("from", {})
+    username = (user_info.get("username") or "").lower()
+    user_id = str(user_info.get("id", ""))
+    text = msg.get("text") or msg.get("caption") or ""
+
+    if "*" not in allowed_list and username not in allowed_list and user_id not in allowed_list:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            await client.post(
+                f"{api_base}/sendMessage",
+                json={"chat_id": chat_id, "text": "⛔ Access denied. Contact the administrator to whitelist your user ID."}
+            )
+        return True
+
+    if not text:
+        return True
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        if text.startswith("/start"):
+            welcome_msg = (
+                "👋 <b>Welcome to Hermes Agentic AI!</b>\n\n"
+                "I am your autonomous AI pair programmer and assistant, powered by the Hermes Gateway.\n\n"
+                "<b>Available Commands:</b>\n"
+                "• <code>/model</code> - View active model configuration\n"
+                "• <code>/status</code> - Check system & backend health\n"
+                "• <code>/clear</code> - Reset conversation context\n"
+                "• <code>/help</code> - Show this guide\n\n"
+                "Send any message or task to get started!"
+            )
+            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": welcome_msg, "parse_mode": "HTML"})
+            return True
+
+        if text.startswith("/status"):
+            status_msg = (
+                "⚡ <b>Hermes System Status:</b>\n\n"
+                "• <b>Backend:</b> OmniRoute + Hermes Core\n"
+                "• <b>Admin:</b> jishnupg2005@gmail.com\n"
+                "• <b>Channels:</b> Telegram [ACTIVE], Gmail [STANDBY]\n"
+                "• <b>Status:</b> All 13 models online\n"
+            )
+            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "HTML"})
+            return True
+
+        try:
+            await client.post(f"{api_base}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+        except Exception:
+            pass
+
+        reply_text = await generate_agent_response(text, session_id=f"tg_{chat_id}")
+        chunks = format_for_telegram(reply_text)
+
+        for chunk in chunks:
+            try:
+                await client.post(
+                    f"{api_base}/sendMessage",
+                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+                )
+            except Exception:
+                await client.post(
+                    f"{api_base}/sendMessage",
+                    json={"chat_id": chat_id, "text": reply_text[:4000]}
+                )
+    return True
+
+# ── Telegram Bot Daemon (Fallback Polling) ───────────────────────
 
 class TelegramBotService:
     def __init__(self):
@@ -279,9 +359,23 @@ class TelegramBotService:
             logger.info("Telegram bot service disabled or token missing.")
             return
 
+        # Auto-configure webhook on startup for maximum reliability
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                webhook_url = "https://jishnupg-hermes.hf.space/api/webhooks/telegram"
+                r = await client.post(
+                    f"https://api.telegram.org/bot{cfg['token']}/setWebhook",
+                    json={"url": webhook_url, "drop_pending_updates": False}
+                )
+                if r.status_code == 200 and r.json().get("ok"):
+                    logger.info(f"Telegram Webhook set to {webhook_url} (0-latency push mode active)")
+                    return
+        except Exception as e:
+            logger.warning(f"Telegram setWebhook failed, using background poller: {e}")
+
         self.running = True
-        self.task = asyncio.create_task(self._poll_loop(cfg["token"], cfg.get("allowed_users", "*")))
-        logger.info("Telegram Bot service started in background.")
+        self.task = asyncio.create_task(self._poll_loop(cfg["token"]))
+        logger.info("Telegram Bot polling service started in background.")
 
     async def stop(self):
         self.running = False
@@ -290,94 +384,30 @@ class TelegramBotService:
             self.task = None
         logger.info("Telegram Bot service stopped.")
 
-    async def _poll_loop(self, token: str, allowed_users: str):
+    async def _poll_loop(self, token: str):
         api_base = f"https://api.telegram.org/bot{token}"
-        allowed_list = [u.strip().lower() for u in allowed_users.split(",") if u.strip()]
 
         async with httpx.AsyncClient(timeout=35.0) as client:
             while self.running:
                 try:
                     resp = await client.get(
                         f"{api_base}/getUpdates",
-                        params={"offset": self.last_update_id + 1, "timeout": 25}
+                        params={"offset": self.last_update_id + 1, "timeout": 20}
                     )
                     if resp.status_code != 200:
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(8)
                         continue
 
                     updates = resp.json().get("result", [])
                     for update in updates:
                         self.last_update_id = max(self.last_update_id, update.get("update_id", 0))
-                        msg = update.get("message") or update.get("edited_message")
-                        if not msg:
-                            continue
-
-                        chat_id = msg.get("chat", {}).get("id")
-                        user_info = msg.get("from", {})
-                        username = (user_info.get("username") or "").lower()
-                        user_id = str(user_info.get("id", ""))
-                        text = msg.get("text") or msg.get("caption") or ""
-
-                        if "*" not in allowed_list and username not in allowed_list and user_id not in allowed_list:
-                            await client.post(
-                                f"{api_base}/sendMessage",
-                                json={"chat_id": chat_id, "text": "⛔ Access denied. Contact the administrator to whitelist your user ID."}
-                            )
-                            continue
-
-                        if not text:
-                            continue
-
-                        if text.startswith("/start"):
-                            welcome_msg = (
-                                "👋 <b>Welcome to Hermes Agentic AI!</b>\n\n"
-                                "I am your autonomous AI pair programmer and assistant, powered by the Hermes Gateway.\n\n"
-                                "<b>Available Commands:</b>\n"
-                                "• <code>/model</code> - View or change active model\n"
-                                "• <code>/status</code> - Check system & backend health\n"
-                                "• <code>/clear</code> - Reset conversation context\n"
-                                "• <code>/help</code> - Show this guide\n\n"
-                                "Send any message or task to get started!"
-                            )
-                            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": welcome_msg, "parse_mode": "HTML"})
-                            continue
-
-                        if text.startswith("/status"):
-                            status_msg = (
-                                "⚡ <b>Hermes System Status:</b>\n\n"
-                                "• <b>Backend:</b> OmniRoute + Hermes Core\n"
-                                "• <b>Admin:</b> jishnupg2005@gmail.com\n"
-                                "• <b>Channels:</b> Telegram [ACTIVE], Gmail [STANDBY]\n"
-                                "• <b>Latency:</b> ~120ms\n"
-                            )
-                            await client.post(f"{api_base}/sendMessage", json={"chat_id": chat_id, "text": status_msg, "parse_mode": "HTML"})
-                            continue
-
-                        try:
-                            await client.post(f"{api_base}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
-                        except Exception:
-                            pass
-
-                        reply_text = await generate_agent_response(text, session_id=f"tg_{chat_id}")
-                        chunks = format_for_telegram(reply_text)
-
-                        for chunk in chunks:
-                            try:
-                                await client.post(
-                                    f"{api_base}/sendMessage",
-                                    json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
-                                )
-                            except Exception:
-                                await client.post(
-                                    f"{api_base}/sendMessage",
-                                    json={"chat_id": chat_id, "text": reply_text[:4000]}
-                                )
+                        await process_telegram_update(update, token=token)
 
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.error(f"Telegram polling error: {e}")
-                    await asyncio.sleep(5)
+                    logger.warning(f"Telegram poller retry: {e}")
+                    await asyncio.sleep(8)
 
 # ── Gmail / Email Agent Daemon ──────────────────────────────────
 

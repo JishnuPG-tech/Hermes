@@ -2934,3 +2934,31 @@ async def incoming_webhook(request: Request):
     reply = await cm.generate_agent_response(f"[Webhook Event]\n{text}", session_id="webhook_trigger")
     return {"status": "ok", "response": reply}
 
+@router.post("/api/webhooks/telegram")
+@router.post("/hermes/api/webhooks/telegram")
+async def telegram_webhook(request: Request):
+    try:
+        update_data = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+    
+    asyncio.create_task(cm.process_telegram_update(update_data))
+    return {"ok": True}
+
+@router.post("/api/settings/channels/telegram/set_webhook")
+@router.post("/hermes/api/settings/channels/telegram/set_webhook")
+async def set_telegram_webhook_api(request: Request):
+    cfg = cm.load_channels_config().get("telegram", {})
+    token = cfg.get("token")
+    if not token:
+        return {"status": "error", "message": "No Telegram Bot Token configured"}
+    
+    webhook_url = "https://jishnupg-hermes.hf.space/api/webhooks/telegram"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        res = await client.post(
+            f"https://api.telegram.org/bot{token}/setWebhook",
+            json={"url": webhook_url, "drop_pending_updates": False}
+        )
+        if res.status_code == 200 and res.json().get("ok"):
+            return {"status": "ok", "url": webhook_url, "telegram_response": res.json()}
+        return {"status": "error", "message": f"Telegram API error: {res.text}"}

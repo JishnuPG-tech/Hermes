@@ -177,8 +177,8 @@ while [ $i -lt 10 ]; do
 done
 
 # ── Start Hermes Agent :8642 ────────────────────────────────────
-log_info "Starting Hermes agent on 127.0.0.1:${HERMES_INTERNAL_PORT}"
-hermes gateway run 2>&1 | tee /data/cache/hermes.log &
+# Start Hermes agent in internal API server mode (Messaging channels managed via Gateway Webhooks)
+GATEWAY_ALLOW_ALL_USERS=true (unset TELEGRAM_BOT_TOKEN TELEGRAM_ALLOWED_USERS; hermes gateway run 2>&1 | tee /data/cache/hermes.log) &
 HERMES_PID=$!
 
 i=0
