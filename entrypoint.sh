@@ -7,15 +7,15 @@ log_error() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [ERROR] [HERMES] $1"; }
 # ── Config ──────────────────────────────────────────────────────
 OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-https://jishnupg-opencode-cli.hf.space/v1}"
 OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-sk-2e556e0437ee2958-7baf2d-b4133935}"
-HERMES_MODEL="${HERMES_MODEL:-auto/best-coding}"
+HERMES_MODEL="${HERMES_MODEL:-groq/openai/gpt-oss-120b}"
 HERMES_INTERNAL_PORT="${HERMES_INTERNAL_PORT:-8642}"
 PUBLIC_PORT="${PUBLIC_PORT:-7860}"
 API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 OMNIROUTE_ACTIVE="/root/.omniroute"
 OMNIROUTE_DATA="/data/omniroute"
-# Skip internal OmniRoute (use external) - saves resources and avoids rate limits
-SKIP_INTERNAL_OMNIROUTE="${SKIP_INTERNAL_OMNIROUTE:-true}"
+# Enable internal OmniRoute for instant local routing & zero external latency
+SKIP_INTERNAL_OMNIROUTE="${SKIP_INTERNAL_OMNIROUTE:-false}"
 
 export OMNIROUTE_BASE_URL OMNIROUTE_API_KEY API_SERVER_KEY HERMES_INTERNAL_PORT
 

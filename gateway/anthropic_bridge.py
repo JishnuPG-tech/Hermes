@@ -115,21 +115,20 @@ def system_to_openai(system) -> str:
 
 import time
 
-# Verified Multi-Provider Auto Routes (Excluding single-account antigravity models)
+# Verified Healthy Models (Ranked by live test responsiveness)
 HEALTHY_FAILOVER_MODELS = [
+    "groq/openai/gpt-oss-120b",
+    "groq/openai/gpt-oss-20b",
+    "antigravity/gemini-2.5-flash",
+    "antigravity/gemini-2.5-flash-thinking",
+    "antigravity/gemini-3.5-flash-low",
+    "antigravity/gemini-3.1-flash-lite",
     "auto/best-coding",
-    "auto/best-chat",
-    "auto/smart",
-    "auto/best-coding-fast",
-    "auto/fast",
-    "auto/best-fast",
-    "auto/pro-chat",
-    "auto/claude-sonnet",
-    "auto/claude-opus"
+    "auto/smart"
 ]
 
 MODEL_COOLDOWN_MAP: Dict[str, float] = {} # model_name -> expiration timestamp
-ACTIVE_HERMES_MODEL = "auto/best-coding"
+ACTIVE_HERMES_MODEL = "groq/openai/gpt-oss-120b"
 CONVERSATION_MODEL_MAP: Dict[str, str] = {} # chat_id -> model_name
 
 def set_active_model(model_name: str, chat_id: Optional[str] = None):
