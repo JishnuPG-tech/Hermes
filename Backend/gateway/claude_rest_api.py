@@ -953,6 +953,24 @@ async def app_start_response(org_id: Optional[str] = None):
                 "bell_mode_enabled": {"defaultValue": True},
                 "voice_model_selector_enabled": {"defaultValue": True},
                 "model_picker_auto_dismiss_enabled": {"defaultValue": True},
+                "project_bell_frontend": {"defaultValue": True},
+                "project_bell_voice_chat_merge": {"defaultValue": True},
+                "project_bell_v2_ui": {"defaultValue": True},
+                "project_bell_attachments_enabled": {"defaultValue": True},
+                "project_bell_assistant_audio_enabled": {"defaultValue": True},
+                "claudeai_read_aloud_set_speed_enabled": {"defaultValue": True},
+                "claudeai_read_aloud_survive_nav_enabled": {"defaultValue": True},
+                "claudeai_read_aloud_compression_enabled": {"defaultValue": True},
+                "project_bell_frontend_config": {
+                    "defaultValue": {
+                        "enabled": True,
+                        "show_tooltip": True,
+                        "server_interrupt_enabled": True,
+                        "auto_send_enabled": True,
+                        "ptt_background_stop_delay_ms": 500,
+                        "hold_park_grace_ms": 300
+                    }
+                },
                 "bell_config": {
                     "defaultValue": {
                         "enabled": True,
@@ -3347,3 +3365,127 @@ async def render_public_artifact_post(request: Request):
             "Content-Security-Policy": "frame-ancestors *"
         }
     )
+
+# ==============================================================================
+# 13. Claude APK WebSocket Text-to-Speech Streaming (/api/ws/text_to_speech/text_stream)
+# ==============================================================================
+from fastapi import WebSocket, WebSocketDisconnect
+
+@router.websocket("/api/ws/text_to_speech/text_stream")
+@router.websocket("/ws/text_to_speech/text_stream")
+@router.websocket("/hermes/api/ws/text_to_speech/text_stream")
+@router.websocket("/hermes//api/ws/text_to_speech/text_stream")
+async def tts_websocket_stream(websocket: WebSocket):
+    await websocket.accept()
+    query_params = dict(websocket.query_params)
+    voice_param = query_params.get("voice", "en-US-ChristopherNeural")
+    
+    # Map Claude APK preset voice names to high quality Microsoft Neural voices
+    voice_map = {
+        "buttery": "en-US-ChristopherNeural",
+        "crisp": "en-US-GuyNeural",
+        "warm": "en-US-AriaNeural",
+        "clear": "en-US-JennyNeural",
+        "suave": "en-GB-RyanNeural"
+    }
+    voice = voice_map.get(voice_param, voice_param)
+    if "Neural" not in voice:
+        voice = "en-US-ChristopherNeural"
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if not data:
+                continue
+            
+            try:
+                msg = json.loads(data)
+            except Exception:
+                msg = {"text": data}
+
+            msg_type = msg.get("type", "")
+            if msg_type == "close_stream":
+                break
+
+            text_chunk = msg.get("text", "")
+            if text_chunk:
+                # Stream neural audio chunks back to Android AudioTrack
+                async for audio_chunk in ve.synthesize_speech_stream(text_chunk, voice=voice):
+                    if audio_chunk:
+                        await websocket.send_bytes(audio_chunk)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"TTS WebSocket stream error: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+# ==============================================================================
+# 14. Universal File & Image Upload Endpoints (Matching Mobile APK routes)
+# ==============================================================================
+@router.post("/api/{org_id}/upload")
+@router.post("/api/organizations/{org_id}/upload")
+@router.post("/organizations/{org_id}/upload")
+@router.post("/api/organizations/{org_id}/projects/{project_id}/upload")
+@router.post("/organizations/{org_id}/projects/{project_id}/upload")
+@router.post("/api/upload")
+@router.post("/upload")
+@router.post("/hermes/api/{org_id}/upload")
+@router.post("/hermes/api/organizations/{org_id}/upload")
+async def universal_file_upload(request: Request, org_id: Optional[str] = None, project_id: Optional[str] = None):
+    content_type = request.headers.get("content-type", "")
+    file_name = "document.txt"
+    file_content = ""
+    file_type = "text/plain"
+    file_size = 0
+
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        uploaded_file = form.get("file")
+        if uploaded_file and hasattr(uploaded_file, "filename"):
+            file_name = uploaded_file.filename
+            raw_bytes = await uploaded_file.read()
+            file_size = len(raw_bytes)
+            file_type = uploaded_file.content_type or "application/octet-stream"
+            try:
+                file_content = raw_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                file_content = f"[Binary file: {file_name}, size: {file_size} bytes]"
+        else:
+            file_content = str(form.get("content") or form.get("text") or "")
+            file_size = len(file_content.encode("utf-8"))
+    else:
+        try:
+            body = await request.json()
+            file_name = body.get("file_name") or body.get("filename") or "document.txt"
+            file_content = body.get("content") or body.get("extracted_content") or ""
+            file_type = body.get("file_type") or "text/plain"
+            file_size = len(file_content.encode("utf-8"))
+        except Exception:
+            raw_bytes = await request.body()
+            file_size = len(raw_bytes)
+            file_content = raw_bytes.decode("utf-8", errors="replace")
+
+    file_id = f"file_{uuid.uuid4().hex[:16]}"
+    now_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    
+    record = {
+        "id": file_id,
+        "uuid": file_id,
+        "file_uuid": file_id,
+        "file_name": file_name,
+        "filename": file_name,
+        "file_size": file_size,
+        "file_type": file_type,
+        "extracted_content": file_content,
+        "content": file_content,
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "status": "ready"
+    }
+    
+    _UPLOADED_FILES[file_id] = record
+    return record
