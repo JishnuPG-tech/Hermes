@@ -1251,7 +1251,11 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
             return
 
         # Autonomous Agent Loop with tools, skills, bash, and server file control
-        full_text = await ae.run_autonomous_agent(chat_id, prompt, messages, model, msg_id, queue)
+        res_tuple = await ae.run_autonomous_agent(chat_id, prompt, messages, model, msg_id, queue)
+        if isinstance(res_tuple, tuple):
+            full_text, full_thinking = res_tuple
+        else:
+            full_text, full_thinking = str(res_tuple), ""
     except Exception as e:
         logger.error(f"Error in background agent execution for {chat_id}: {e}")
         if not text_active and not full_text:
@@ -1281,11 +1285,27 @@ async def _execute_agent_background(chat_id: str, prompt: str, messages: list, m
                 msgs = _CONVERSATIONS[chat_id]["chat_messages"]
                 prev_uuid = msgs[-1]["uuid"] if msgs else None
                 
-                asst_msg = _format_msg("assistant", full_text, len(msgs), prev_uuid)
-                asst_msg["content"] = [
-                    {"type": "text", "text": full_text}
-                ]
-                msgs.append(asst_msg)
+                asst_msg = _format_msg("assistant", full_text, len(msgs), prev_uuid, msg_id=msg_id)
+                if full_thinking and full_thinking.strip():
+                    asst_msg["content"] = [
+                        {"type": "thinking", "thinking": full_thinking.strip()},
+                        {"type": "text", "text": full_text.strip()}
+                    ]
+                else:
+                    asst_msg["content"] = [
+                        {"type": "text", "text": full_text.strip()}
+                    ]
+                
+                updated_existing = False
+                for m in reversed(msgs):
+                    if m.get("uuid") == msg_id or m.get("sender") == "assistant":
+                        m["text"] = full_text
+                        m["content"] = asst_msg["content"]
+                        m["stop_reason"] = "end_turn"
+                        updated_existing = True
+                        break
+                if not updated_existing:
+                    msgs.append(asst_msg)
                 _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 _save_history()
         except Exception as se:

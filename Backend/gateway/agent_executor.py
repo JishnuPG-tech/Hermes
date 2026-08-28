@@ -14,7 +14,6 @@ from gateway import background_agent as bg
 
 logger = logging.getLogger("hermes.agent_executor")
 
-# Base workspace directory for safe executions
 DEFAULT_WORKSPACE = Path("/data") if Path("/data").exists() else Path("/tmp")
 DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 SKILLS_DIR = Path("/data/hermes/skills") if Path("/data/hermes").exists() else Path("/tmp/hermes/skills")
@@ -482,9 +481,10 @@ async def run_autonomous_agent(
     model: str,
     msg_id: str,
     queue: asyncio.Queue
-) -> str:
-    """Multi-turn autonomous execution loop with function calling, collapsible thinking blocks, and clean final response."""
+) -> Tuple[str, str]:
+    """Multi-turn autonomous execution loop with clean, auto-collapsing thinking blocks."""
     full_text = ""
+    full_thinking = ""
     thinking_active = False
     text_active = False
 
@@ -497,7 +497,7 @@ async def run_autonomous_agent(
         await queue.put(ab.create_content_block_stop(0))
         await queue.put(ab.create_message_delta("end_turn"))
         await queue.put(ab.create_message_stop())
-        return res
+        return res, ""
 
     system_prompt = build_system_prompt_with_skills(chat_id)
     openai_messages = [{"role": "system", "content": system_prompt}]
@@ -517,11 +517,9 @@ async def run_autonomous_agent(
 
     max_turns = 10
     thinking_block_idx = 0
-    text_block_idx = 1
     had_tool_execution = False
 
     for turn in range(max_turns):
-        # In turns after tools have executed, force synthesis if max turns near or tools done
         include_tools = turn < (max_turns - 1)
         payload = {
             "model": model or "auto/smart",
@@ -535,7 +533,6 @@ async def run_autonomous_agent(
         turn_text = ""
         tool_calls = []
 
-        # Stream upstream tokens
         try:
             async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
                 data = data.strip()
@@ -550,7 +547,7 @@ async def run_autonomous_agent(
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
                 
-                # Check for model native reasoning
+                # Stream model native reasoning into thinking block
                 reasoning_chunk = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning_chunk:
                     if not thinking_active and not text_active:
@@ -558,6 +555,7 @@ async def run_autonomous_agent(
                         thinking_active = True
                     if thinking_active:
                         await queue.put(ab.create_thinking_block_delta(reasoning_chunk, thinking_block_idx))
+                        full_thinking += reasoning_chunk
 
                 text_delta = delta.get("content", "")
                 if not text_delta:
@@ -587,7 +585,7 @@ async def run_autonomous_agent(
         except Exception as se:
             logger.warning(f"Turn {turn} stream error: {se}")
 
-        # Check for fallback text-based tool calls if no native tool calls returned
+        # Check for fallback text-based tool calls
         if not tool_calls and "<tool_call" in turn_text:
             extracted = _extract_tool_calls_from_text(turn_text)
             for tname, targs in extracted:
@@ -596,21 +594,20 @@ async def run_autonomous_agent(
                     "function": {"name": tname, "arguments": json.dumps(targs)}
                 })
 
-        # CASE 1: Tools are being executed in this turn -> Stream to THINKING block
+        # CASE 1: Tools are called in this turn -> Stream to THINKING block
         if tool_calls:
             had_tool_execution = True
             if not thinking_active and not text_active:
                 await queue.put(ab.create_thinking_block_start(thinking_block_idx))
                 thinking_active = True
 
-            # If the model had some intermediate thought text before tool calls, route to thinking
             if turn_text.strip() and thinking_active:
                 clean_thought = turn_text.strip() + "\n"
                 await queue.put(ab.create_thinking_block_delta(clean_thought, thinking_block_idx))
+                full_thinking += clean_thought
 
             openai_messages.append({"role": "assistant", "content": turn_text or "Executing requested tools..."})
 
-            # Execute all tool calls and stream execution logs into THINKING block
             for tc in tool_calls:
                 fn = tc.get("function", {})
                 fn_name = fn.get("name", "")
@@ -635,24 +632,28 @@ async def run_autonomous_agent(
 
                 if thinking_active:
                     await queue.put(ab.create_thinking_block_delta(tool_thought, thinking_block_idx))
+                    full_thinking += tool_thought
 
-                # Execute tool safely
                 tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
 
-                # Emit tool stdout preview inside thinking block
                 if tool_result and thinking_active:
                     out_preview = f"```\n{tool_result[:1000]}\n```\n"
                     await queue.put(ab.create_thinking_block_delta(out_preview, thinking_block_idx))
+                    full_thinking += out_preview
 
-                # Inject tool result in standard user role format for subsequent reasoning turns
                 openai_messages.append({
                     "role": "user",
                     "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete final response to the user."
                 })
 
-        # CASE 2: No more tools called -> This is the FINAL USER-FACING RESPONSE!
+        # CASE 2: No tools called -> This is the FINAL USER-FACING RESPONSE!
         else:
-            # If we had empty text after tools, make a direct synthesis request to ensure complete answer
+            # First, close the thinking block cleanly so the Claude Compose UI marks it complete and collapses it!
+            if thinking_active:
+                await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
+                thinking_active = False
+
+            # If we had tool executions previously but the model generated no text in this turn, request explicit synthesis
             if had_tool_execution and not turn_text.strip():
                 synth_messages = list(openai_messages)
                 synth_messages.append({
@@ -664,6 +665,11 @@ async def run_autonomous_agent(
                     "messages": synth_messages,
                     "stream": True
                 }
+
+                text_block_idx = 1 if had_tool_execution else 0
+                await queue.put(ab.create_content_block_start(text_block_idx))
+                text_active = True
+
                 async for data in ab.stream_upstream(synth_payload, requested_model=model, chat_id=chat_id):
                     data = data.strip()
                     if not data or data == "[DONE]":
@@ -675,34 +681,32 @@ async def run_autonomous_agent(
                     delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
                     td = delta.get("content", "") or ""
                     if td:
-                        turn_text += td
+                        await queue.put(ab.create_content_block_delta(td, text_block_idx))
+                        full_text += td
+            else:
+                text_block_idx = 1 if had_tool_execution else 0
+                if not text_active:
+                    await queue.put(ab.create_content_block_start(text_block_idx))
+                    text_active = True
 
-            # Close thinking block if it was active
-            if thinking_active:
-                await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
-                thinking_active = False
+                clean_final = turn_text.strip()
+                if not clean_final:
+                    clean_final = "I've completed your request. Let me know if you need any further assistance!"
 
-            # Stream clean final user-facing text
-            actual_text_idx = 1 if had_tool_execution else 0
-            if not text_active:
-                await queue.put(ab.create_content_block_start(actual_text_idx))
-                text_active = True
+                await queue.put(ab.create_content_block_delta(clean_final, text_block_idx))
+                full_text += clean_final
 
-            clean_final = turn_text.strip()
-            if not clean_final:
-                clean_final = "I've completed your request. Let me know if you need any further assistance!"
-
-            await queue.put(ab.create_content_block_delta(clean_final, actual_text_idx))
-            full_text = clean_final
             break
 
-    # Clean up stream blocks
+    # Clean up stream blocks with exact single stop calls
     if thinking_active:
         await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
+        thinking_active = False
 
     if text_active:
-        actual_text_idx = 1 if had_tool_execution else 0
-        await queue.put(ab.create_content_block_stop(actual_text_idx))
+        text_block_idx = 1 if had_tool_execution else 0
+        await queue.put(ab.create_content_block_stop(text_block_idx))
+        text_active = False
     elif not full_text:
         reply = "I've completed your request."
         await queue.put(ab.create_content_block_start(0))
@@ -712,4 +716,4 @@ async def run_autonomous_agent(
 
     await queue.put(ab.create_message_delta("end_turn"))
     await queue.put(ab.create_message_stop())
-    return full_text
+    return full_text, full_thinking
