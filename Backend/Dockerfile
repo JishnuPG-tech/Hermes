@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     rsync \
     procps \
+    ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy OmniRoute from upstream image (prebuilt, no npm install)

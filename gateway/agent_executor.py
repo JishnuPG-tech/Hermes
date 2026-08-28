@@ -482,10 +482,8 @@ async def run_autonomous_agent(
     msg_id: str,
     queue: asyncio.Queue
 ) -> Tuple[str, str]:
-    """Autonomous agent loop with dynamic live status text next to the Claude loading animation."""
+    """Autonomous agent loop streaming clean direct response to Claude APK."""
     full_text = ""
-    full_thinking = ""
-    summary_active = False
     text_active = False
 
     skill_match = re.search(r'(?:^/skill\s+|activate\s+(?:the\s+)?skill\s+|use\s+(?:the\s+)?skill\s+)([a-zA-Z0-9_\-]+)', prompt, re.IGNORECASE)
@@ -498,11 +496,6 @@ async def run_autonomous_agent(
         await queue.put(ab.create_message_delta("end_turn"))
         await queue.put(ab.create_message_stop())
         return res, ""
-
-    # Emit initial ThinkingBlock with dynamic ThinkingSummary
-    await queue.put(ab.create_thinking_block_start("Thinking...", index=0))
-    await queue.put(ab.create_thinking_summary_delta("Thinking...", index=0))
-    summary_active = True
 
     system_prompt = build_system_prompt_with_skills(chat_id)
     openai_messages = [{"role": "system", "content": system_prompt}]
@@ -586,7 +579,7 @@ async def run_autonomous_agent(
                     "function": {"name": tname, "arguments": json.dumps(targs)}
                 })
 
-        # CASE 1: Tools are triggered -> Update dynamic status text next to Claude loading spinner
+        # CASE 1: Tools are triggered -> Execute quietly on server in background
         if tool_calls:
             had_tool_execution = True
             openai_messages.append({"role": "assistant", "content": turn_text or "Executing requested tools..."})
@@ -600,34 +593,8 @@ async def run_autonomous_agent(
                 except Exception:
                     fn_args = {}
 
-                # Emit live dynamic status update matching the tool action
-                if fn_name == "bash":
-                    cmd_str = fn_args.get("command", "").strip()
-                    status_lbl = f"Executing shell: {cmd_str[:30]}..." if cmd_str else "Executing shell..."
-                elif fn_name == "read_file":
-                    p_str = fn_args.get("path", "").strip()
-                    status_lbl = f"Reading file: {os.path.basename(p_str)}..." if p_str else "Reading file..."
-                elif fn_name == "write_file":
-                    p_str = fn_args.get("path", "").strip()
-                    status_lbl = f"Writing file: {os.path.basename(p_str)}..." if p_str else "Writing file..."
-                elif fn_name == "list_dir":
-                    p_str = fn_args.get("path", "/data").strip()
-                    status_lbl = f"Browsing: {os.path.basename(p_str) or 'data'}..."
-                elif fn_name == "activate_skill":
-                    s_str = fn_args.get("skill_name", "").strip()
-                    status_lbl = f"Activating skill: {s_str}..."
-                elif fn_name == "schedule_task":
-                    status_lbl = "Scheduling 24/7 background task..."
-                else:
-                    status_lbl = f"Running {fn_name}..."
-
-                await queue.put(ab.create_thinking_summary_delta(status_lbl, index=0))
-
                 # Execute tool safely on server
                 tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
-
-                # Update status to analyzing results
-                await queue.put(ab.create_thinking_summary_delta("Analyzing results & planning next step...", index=0))
 
                 openai_messages.append({
                     "role": "user",
@@ -636,17 +603,6 @@ async def run_autonomous_agent(
 
         # CASE 2: No tools called -> THIS IS THE CLEAN FINAL USER-FACING RESPONSE!
         else:
-            # Emit final dynamic transition status
-            if had_tool_execution:
-                await queue.put(ab.create_thinking_summary_delta("Almost there...", index=0))
-                await asyncio.sleep(0.1)
-                await queue.put(ab.create_thinking_summary_delta("Finalizing response...", index=0))
-
-            # Close summary block
-            if summary_active:
-                await queue.put(ab.create_content_block_stop(0))
-                summary_active = False
-
             # Start clean text block 0
             if not text_active:
                 await queue.put(ab.create_content_block_start(0))
@@ -688,11 +644,7 @@ async def run_autonomous_agent(
 
             break
 
-    # Clean up blocks
-    if summary_active:
-        await queue.put(ab.create_content_block_stop(0))
-        summary_active = False
-
+    # Clean up single text block
     if text_active:
         await queue.put(ab.create_content_block_stop(0))
         text_active = False
