@@ -1,3 +1,4 @@
+from gateway import voice_engine as ve
 import os
 import re
 import json
@@ -947,7 +948,21 @@ async def app_start_response(org_id: Optional[str] = None):
                 "premium_enabled": {"defaultValue": True},
                 "subscription_active": {"defaultValue": True},
                 "claude_pro": {"defaultValue": True},
-                "claude_max": {"defaultValue": True}
+                "claude_max": {"defaultValue": True},
+                "voice_mode": {"defaultValue": True},
+                "bell_mode_enabled": {"defaultValue": True},
+                "voice_model_selector_enabled": {"defaultValue": True},
+                "model_picker_auto_dismiss_enabled": {"defaultValue": True},
+                "bell_config": {
+                    "defaultValue": {
+                        "enabled": True,
+                        "show_tooltip": True,
+                        "server_interrupt_enabled": True,
+                        "auto_send_enabled": True,
+                        "ptt_background_stop_delay_ms": 500,
+                        "hold_park_grace_ms": 300
+                    }
+                }
             }
         },
         "server_localizations": {},
@@ -970,7 +985,11 @@ async def app_start_response(org_id: Optional[str] = None):
                 {"feature": "conversation_preferences", "status": "available"},
                 {"feature": "conversation_search", "status": "available"},
                 {"feature": "dramatic_shrimp", "status": "available"},
-                {"feature": "third_party_analytics", "status": "available"}
+                {"feature": "third_party_analytics", "status": "available"},
+                {"feature": "voice_mode", "status": "available"},
+                {"feature": "bell_mode", "status": "available"},
+                {"feature": "voice_model_selector_enabled", "status": "available"},
+                {"feature": "model_picker_auto_dismiss_enabled", "status": "available"}
             ],
             "account_features": [
                 {"feature": "artifacts", "status": "available"},
@@ -3037,3 +3056,291 @@ async def set_telegram_webhook_api(request: Request):
         if res.status_code == 200 and res.json().get("ok"):
             return {"status": "ok", "url": webhook_url, "telegram_response": res.json()}
         return {"status": "error", "message": f"Telegram API error: {res.text}"}
+
+
+# ==============================================================================
+# 11. Real-Time Neural Voice Mode & TTS Read-Aloud (100% Free Stack)
+# ==============================================================================
+@router.get("/api/voice/voices")
+@router.get("/hermes/api/voice/voices")
+@router.get("/voice/voices")
+async def list_voices():
+    return {"voices": ve.get_curated_voices()}
+
+@router.get("/api/voice/tts")
+@router.get("/hermes/api/voice/tts")
+@router.get("/voice/tts")
+async def get_tts_audio(text: str = "", voice: str = "en-US-ChristopherNeural", rate: str = "+0%", pitch: str = "+0Hz"):
+    if not text.strip():
+        text = "Hello! I am ready to assist you."
+    
+    async def audio_generator():
+        async for chunk in ve.synthesize_speech_stream(text, voice=voice, rate=rate, pitch=pitch):
+            if chunk:
+                yield chunk
+
+    return StreamingResponse(
+        audio_generator(),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": "inline; filename=speech.mp3",
+            "Cache-Control": "no-cache",
+            "Accept-Ranges": "bytes"
+        }
+    )
+
+@router.post("/api/voice/tts")
+@router.post("/hermes/api/voice/tts")
+async def post_tts_audio(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    text = body.get("text") or body.get("prompt") or ""
+    voice = body.get("voice") or "en-US-ChristopherNeural"
+    rate = body.get("rate") or "+0%"
+    pitch = body.get("pitch") or "+0Hz"
+
+    async def audio_generator():
+        async for chunk in ve.synthesize_speech_stream(text, voice=voice, rate=rate, pitch=pitch):
+            if chunk:
+                yield chunk
+
+    return StreamingResponse(
+        audio_generator(),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": "inline; filename=speech.mp3",
+            "Cache-Control": "no-cache"
+        }
+    )
+
+@router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/voice_session")
+@router.post("/organizations/{org_id}/chat_conversations/{chat_id}/voice_session")
+@router.post("/hermes/api/organizations/{org_id}/chat_conversations/{chat_id}/voice_session")
+async def create_voice_session(org_id: str, chat_id: str, request: Request):
+    session_id = f"voice_session_{uuid.uuid4().hex[:16]}"
+    return {
+        "id": session_id,
+        "session_id": session_id,
+        "status": "connected",
+        "voice": "en-US-ChristopherNeural",
+        "chat_conversation_uuid": chat_id,
+        "sample_rate": 24000,
+        "audio_format": "mp3",
+        "server_interrupt_enabled": True
+    }
+
+# ==============================================================================
+# 12. Artifacts Sandbox Renderer (/usercontent & Diagram Viewer)
+# ==============================================================================
+_MERMAID_SANDBOX_HTML = r'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Claude Artifact Sandbox</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #121214;
+            --text-color: #f4f4f5;
+            --card-bg: #1c1d22;
+            --border-color: #2e3038;
+            --accent: #d97706;
+            --link: #60a5fa;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        html, body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            padding: 12px 18px;
+            background-color: var(--card-bg);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 15px;
+            margin: 0;
+            font-weight: 600;
+            color: var(--text-color);
+        }
+        .badge {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            background: rgba(217,119,6,0.2);
+            color: #fbbf24;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .container {
+            padding: 20px;
+            flex: 1;
+            box-sizing: border-box;
+            overflow: auto;
+        }
+        pre {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 14px;
+            overflow-x: auto;
+            color: #e4e4e7;
+            font-size: 13.5px;
+            line-height: 1.5;
+        }
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            background: var(--card-bg);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            margin: 16px 0;
+        }
+        iframe.html-runner {
+            width: 100%;
+            min-height: 500px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: #ffffff;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }
+        th, td {
+            border: 1px solid var(--border-color);
+            padding: 10px 14px;
+            text-align: left;
+        }
+        th { background-color: var(--card-bg); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1 id="artTitle">Artifact Preview</h1>
+        <span id="artTypeBadge" class="badge">SANDBOX</span>
+    </div>
+    <div class="container" id="artContent">
+        <!-- RENDER CONTENT HERE -->
+    </div>
+    <script>
+        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+        
+        function renderData(data) {
+            if (!data) return;
+            document.getElementById('artTitle').innerText = data.title || 'Document';
+            var type = data.type || data.artifact_type || 'markdown';
+            document.getElementById('artTypeBadge').innerText = type.replace('application/vnd.ant.', '').toUpperCase();
+            
+            var content = data.content || data.text || '';
+            var container = document.getElementById('artContent');
+            
+            if (type === 'application/vnd.ant.mermaid' || type === 'mermaid') {
+                container.innerHTML = '<div class="mermaid">' + content + '</div>';
+                mermaid.run();
+            } else if (type === 'text/html' || type === 'html') {
+                var iframe = document.createElement('iframe');
+                iframe.className = 'html-runner';
+                container.innerHTML = '';
+                container.appendChild(iframe);
+                var doc = iframe.contentWindow.document;
+                doc.open();
+                doc.write(content);
+                doc.close();
+            } else if (type === 'image/svg+xml' || type === 'svg') {
+                container.innerHTML = '<div style="display:flex;justify-content:center;">' + content + '</div>';
+            } else {
+                container.innerHTML = '<pre><code>' + content.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</code></pre>';
+            }
+        }
+        /*__RENDER_DATA_INSERT__*/
+    </script>
+</body>
+</html>'''
+
+@router.get("/usercontent/{artifact_id:path}", response_class=HTMLResponse)
+@router.get("/api/usercontent/{artifact_id:path}", response_class=HTMLResponse)
+@router.get("/render_public_artifact", response_class=HTMLResponse)
+@router.get("/api/render_public_artifact", response_class=HTMLResponse)
+@router.get("/mcp_apps/{app_id:path}", response_class=HTMLResponse)
+async def serve_usercontent_sandbox(artifact_id: str = "", app_id: str = ""):
+    lookup_id = artifact_id or app_id
+    pub = None
+    if lookup_id:
+        pub = _PUBLISHED_ARTIFACTS.get(lookup_id)
+        if not pub:
+            cid, art = _find_artifact_across_all(lookup_id)
+            if art:
+                pub = _create_version_record(art, lookup_id, chat_id=cid)
+    
+    if not pub:
+        pub = _create_version_record(None, lookup_id or "preview")
+    
+    initial_json = json.dumps({
+        "title": pub.get("title", "Document"),
+        "content": pub.get("content", ""),
+        "type": pub.get("artifact_type") or pub.get("type") or "markdown",
+        "language": pub.get("code_language") or pub.get("language") or ""
+    })
+    
+    html = _MERMAID_SANDBOX_HTML.replace(
+        "/*__RENDER_DATA_INSERT__*/",
+        f"renderData({initial_json});"
+    )
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Content-Security-Policy": "frame-ancestors *"
+        }
+    )
+
+@router.post("/render_public_artifact", response_class=HTMLResponse)
+@router.post("/api/render_public_artifact", response_class=HTMLResponse)
+@router.post("/usercontent/render", response_class=HTMLResponse)
+async def render_public_artifact_post(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    content = body.get("content") or body.get("text") or body.get("html") or ""
+    art_type = body.get("type") or body.get("artifact_type") or "text/html"
+    title = body.get("title") or "Preview"
+    
+    initial_json = json.dumps({
+        "title": title,
+        "content": content,
+        "type": art_type,
+        "language": body.get("language", "")
+    })
+    
+    html = _MERMAID_SANDBOX_HTML.replace(
+        "/*__RENDER_DATA_INSERT__*/",
+        f"renderData({initial_json});"
+    )
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Content-Type": "text/html; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Content-Security-Policy": "frame-ancestors *"
+        }
+    )

@@ -39,7 +39,8 @@ RUN pip3 install --no-cache-dir \
     aiofiles \
     python-multipart \
     httpx \
-    hermes-agent
+    hermes-agent \
+    edge-tts
 
 # Copy Ignis (Obsidian vault server)
 COPY ignis/ /ignis/
