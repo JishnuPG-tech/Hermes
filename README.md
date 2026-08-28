@@ -1,3 +1,13 @@
+---
+title: Hermes
+emoji: ⚡
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
 # 🚀 Hermes — Autonomous AI Agent Platform & Reverse-Engineered Claude Android Client
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
