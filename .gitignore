@@ -1,9 +1,16 @@
-# Local / generated
+# Local / generated & credentials
 .env
 *.log
 *.sqlite
 *.sqlite3
+*.db
 hermes_wheel/
 .venv/
 __pycache__/
 *.pyc
+*.apk
+*.idsig
+*.zip
+*.tar.gz
+node_modules/
+.DS_Store
