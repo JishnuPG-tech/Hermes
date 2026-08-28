@@ -3062,9 +3062,12 @@ async def set_telegram_webhook_api(request: Request):
 # 11. Real-Time Neural Voice Mode & TTS Read-Aloud (100% Free Stack)
 # ==============================================================================
 @router.get("/api/voice/voices")
+@router.get("/organizations/{org_id}/voice/voices")
+@router.get("/api/organizations/{org_id}/voice/voices")
 @router.get("/hermes/api/voice/voices")
+@router.get("/hermes/voice/voices")
 @router.get("/voice/voices")
-async def list_voices():
+async def list_voices(org_id: str = ""):
     return {"voices": ve.get_curated_voices()}
 
 @router.get("/api/voice/tts")
