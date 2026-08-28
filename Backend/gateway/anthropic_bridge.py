@@ -356,10 +356,10 @@ class ContentBlockEmitter:
 
 
 async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str, None]:
-    """Stream Anthropic SSE with ephemeral thinking status and clean text streaming."""
+    """Stream standard Anthropic SSE with direct text and tool use blocks."""
     emitter = ContentBlockEmitter(request_model)
     message_started = False
-    thinking_stopped = False
+    text_started = False
 
     try:
         async for data in stream_upstream(payload, requested_model=request_model):
@@ -374,28 +374,19 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
 
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             piece = delta.get("content")
-            reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
 
-            # 1. Initialize message and emit ephemeral thinking block at index 0
+            # 1. Initialize message on first arrival
             if not message_started:
                 message_started = True
                 yield await emitter.emit_message_start()
-                # Start thinking block (index 0) for dynamic loading animation text
-                yield emitter.emit_content_block_start("thinking", {"type": "thinking", "thinking": ""}, index=0)
-                yield emitter.emit_content_block_delta(0, "thinking_delta", {"thinking": "Thinking..."})
 
-            # 2. If model sends reasoning, stream reasoning as status update deltas in index 0
-            if reasoning_piece and not thinking_stopped:
-                yield emitter.emit_content_block_delta(0, "thinking_delta", {"thinking": reasoning_piece})
-                continue
-
-            # 3. Handle tool calls cleanly
+            # 2. Tool calls
             if tool_calls:
-                if not thinking_stopped:
-                    thinking_stopped = True
+                if text_started:
                     yield emitter.emit_content_block_stop(0)
-                
+                    text_started = False
+
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     tool_idx = emitter._next_index()
@@ -412,24 +403,18 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                     yield emitter.emit_content_block_stop(tool_idx)
                 continue
 
-            # 4. When response text arrives, CLOSE index 0 (thinking) and START index 1 (text)
+            # 3. Direct clean text streaming
             if piece:
-                if not thinking_stopped:
-                    thinking_stopped = True
-                    # Close thinking block 0 -> loading icon animation stops, status text resolves
-                    yield emitter.emit_content_block_stop(0)
-                    # Start text block 1 -> real response text streams cleanly
-                    yield emitter.emit_content_block_start("text", {"type": "text", "text": ""}, index=1)
+                if not text_started:
+                    text_started = True
+                    yield emitter.emit_content_block_start("text", {"type": "text", "text": ""}, index=0)
 
-                yield emitter.emit_content_block_delta(1, "text_delta", {"text": piece})
+                yield emitter.emit_content_block_delta(0, "text_delta", {"text": piece})
 
     finally:
         if message_started:
-            if not thinking_stopped:
+            if text_started:
                 yield emitter.emit_content_block_stop(0)
-            else:
-                yield emitter.emit_content_block_stop(1)
-
             yield emitter.emit_message_delta("end_turn")
             yield emitter.emit_message_stop()
 

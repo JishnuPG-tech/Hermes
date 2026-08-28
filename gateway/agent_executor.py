@@ -482,9 +482,8 @@ async def run_autonomous_agent(
     msg_id: str,
     queue: asyncio.Queue
 ) -> Tuple[str, str]:
-    """Autonomous agent loop: Ephemeral thinking block 0 (updates text next to spinner) -> Closed before text block 1."""
+    """Autonomous agent loop streaming clean direct response to Claude APK."""
     full_text = ""
-    thinking_active = False
     text_active = False
 
     skill_match = re.search(r'(?:^/skill\s+|activate\s+(?:the\s+)?skill\s+|use\s+(?:the\s+)?skill\s+)([a-zA-Z0-9_\-]+)', prompt, re.IGNORECASE)
@@ -497,11 +496,6 @@ async def run_autonomous_agent(
         await queue.put(ab.create_message_delta("end_turn"))
         await queue.put(ab.create_message_stop())
         return res, ""
-
-    # 1. Start ephemeral thinking block at index 0 (renders dynamic label next to spinner)
-    await queue.put(ab.create_thinking_block_start(index=0))
-    await queue.put(ab.create_thinking_delta("Thinking...", index=0))
-    thinking_active = True
 
     system_prompt = build_system_prompt_with_skills(chat_id)
     openai_messages = [{"role": "system", "content": system_prompt}]
@@ -585,7 +579,7 @@ async def run_autonomous_agent(
                     "function": {"name": tname, "arguments": json.dumps(targs)}
                 })
 
-        # CASE 1: Tools are triggered -> Update dynamic status label next to Claude spinner
+        # CASE 1: Tools are triggered -> Execute quietly on server in background
         if tool_calls:
             had_tool_execution = True
             openai_messages.append({"role": "assistant", "content": turn_text or "Executing requested tools..."})
@@ -599,51 +593,18 @@ async def run_autonomous_agent(
                 except Exception:
                     fn_args = {}
 
-                # Emit live dynamic status text next to spinner
-                if fn_name == "bash":
-                    cmd_str = fn_args.get("command", "").strip()
-                    status_lbl = f"Executing shell: {cmd_str[:25]}..." if cmd_str else "Executing shell..."
-                elif fn_name == "read_file":
-                    p_str = fn_args.get("path", "").strip()
-                    status_lbl = f"Reading file: {os.path.basename(p_str)}..." if p_str else "Reading file..."
-                elif fn_name == "write_file":
-                    p_str = fn_args.get("path", "").strip()
-                    status_lbl = f"Writing file: {os.path.basename(p_str)}..." if p_str else "Writing file..."
-                elif fn_name == "list_dir":
-                    p_str = fn_args.get("path", "/data").strip()
-                    status_lbl = f"Browsing: {os.path.basename(p_str) or 'data'}..."
-                elif fn_name == "activate_skill":
-                    s_str = fn_args.get("skill_name", "").strip()
-                    status_lbl = f"Activating skill: {s_str}..."
-                elif fn_name == "schedule_task":
-                    status_lbl = "Scheduling 24/7 background task..."
-                else:
-                    status_lbl = f"Running {fn_name}..."
-
-                if thinking_active:
-                    await queue.put(ab.create_thinking_delta(f" {status_lbl}", index=0))
-
                 # Execute tool safely on server
                 tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
-
-                if thinking_active:
-                    await queue.put(ab.create_thinking_delta(" Analyzing results...", index=0))
 
                 openai_messages.append({
                     "role": "user",
                     "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete final response to the user."
                 })
 
-        # CASE 2: Final user-facing text ready
+        # CASE 2: No tools called -> Clean single text block 0!
         else:
-            # 2. IMMEDIATELY CLOSE ephemeral thinking block 0 before starting text!
-            if thinking_active:
-                await queue.put(ab.create_content_block_stop(0))
-                thinking_active = False
-
-            # 3. Start text block at index 1
             if not text_active:
-                await queue.put(ab.create_content_block_start(1))
+                await queue.put(ab.create_content_block_start(0))
                 text_active = True
 
             # If we had tool executions previously but the model returned no text on the last turn, request direct synthesis
@@ -670,31 +631,27 @@ async def run_autonomous_agent(
                     delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
                     td = delta.get("content", "") or ""
                     if td:
-                        await queue.put(ab.create_content_block_delta(td, 1))
+                        await queue.put(ab.create_content_block_delta(td, 0))
                         full_text += td
             else:
                 clean_final = turn_text.strip()
                 if not clean_final:
                     clean_final = "I've completed your request. Let me know if you need any further assistance!"
 
-                await queue.put(ab.create_content_block_delta(clean_final, 1))
+                await queue.put(ab.create_content_block_delta(clean_final, 0))
                 full_text += clean_final
 
             break
 
-    # Clean up blocks cleanly
-    if thinking_active:
-        await queue.put(ab.create_content_block_stop(0))
-        thinking_active = False
-
+    # Clean up single text block 0
     if text_active:
-        await queue.put(ab.create_content_block_stop(1))
+        await queue.put(ab.create_content_block_stop(0))
         text_active = False
     elif not full_text:
         reply = "I've completed your request."
-        await queue.put(ab.create_content_block_start(1))
-        await queue.put(ab.create_content_block_delta(reply, 1))
-        await queue.put(ab.create_content_block_stop(1))
+        await queue.put(ab.create_content_block_start(0))
+        await queue.put(ab.create_content_block_delta(reply, 0))
+        await queue.put(ab.create_content_block_stop(0))
         full_text = reply
 
     await queue.put(ab.create_message_delta("end_turn"))
