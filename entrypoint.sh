@@ -105,6 +105,8 @@ gateway:
       port: ${HERMES_INTERNAL_PORT}
       key: ${API_SERVER_KEY}
       cors_origins: "*"
+    telegram:
+      enabled: false
 EOF
 
 cat > "${HERMES_HOME}/.env" <<EOF
