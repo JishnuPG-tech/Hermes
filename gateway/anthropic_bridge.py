@@ -693,13 +693,15 @@ def create_content_block_retract(from_index: int = 0) -> str:
     return f"event: content_block_retract\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
-def create_thinking_summary_start(summary: str = "", index: int = 0) -> str:
+def create_thinking_summary_start(summary: str = "Thinking...", index: int = 0) -> str:
     event = {
         "type": "content_block_start",
         "index": index,
         "content_block": {
             "type": "thinking_summary",
-            "summary": summary
+            "summary": {
+                "summary": summary
+            }
         }
     }
     return f"event: content_block_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
@@ -711,7 +713,9 @@ def create_thinking_summary_delta(summary: str, index: int = 0) -> str:
         "index": index,
         "delta": {
             "type": "thinking_summary_delta",
-            "summary": summary
+            "summary": {
+                "summary": summary
+            }
         }
     }
     return f"event: content_block_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
