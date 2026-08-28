@@ -1,136 +1,87 @@
----
-title: Hermes Agent
-emoji: 🤖
-colorFrom: purple
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
+# Hermes AI Backend & Autonomous Microservices
 
-# 🤖 Hermes Agent (Standalone)
-
-A standalone deployment of the **Hermes Agent** — the self-improving, tool-calling AI agent from [Nous Research](https://hermes-agent.nousresearch.com) — running on a Hugging Face Space.
-
-Hermes is wired to the **OmniRoute AI Gateway** (`https://jishnupg-opencode-cli.hf.space/v1`) as its LLM brain, using the `auto/best-coding` routing model.
-
-A public FastAPI gateway fronts the Space: it exposes the **Anthropic Messages API** (for the patched Claude Android app) and reverse-proxies the **OpenAI-compatible** API to the Hermes agent. The Anthropic bridge forwards to the Hermes agent (not raw OmniRoute), so the app gets the **full agent**: Hermes persona, persistent memory, skills, tools, and the agentic loop.
+This directory contains the production-grade backend services for the **Hermes Platform**, combining high-performance LLM routing, autonomous server tool execution, 24/7 background task scheduling, mobile telemetry ingestion, and interactive Obsidian notes management.
 
 ---
 
-## 🔌 Exposed API
+## 🏛️ System Architecture
 
-The Space exposes a public gateway on `https://jishnupg-hermes.hf.space` (`app_port` 7860):
-
-| Endpoint | Path |
-|---|---|
-| Anthropic Messages API | `POST /hermes/v1/messages` |
-| Anthropic Model List | `GET /hermes/v1/models` |
-| OpenAI Base URL | `https://jishnupg-hermes.hf.space/v1` |
-| OpenAI Models | `GET /v1/models` |
-| Chat Completions | `POST /v1/chat/completions` (SSE streaming supported) |
-| Responses API | `POST /v1/responses` |
-| Health | `GET /health`, `GET /health/detailed` |
-
-**Auth:** Bearer token — use the `API_SERVER_KEY` Space secret (or the configured OmniRoute API key if unset). `/hermes/v1/*` Anthropic endpoints pass through the same bearer key.
-
-### Patched Claude Android app
-
-Point the app's API base URL at:
-
-```
-https://jishnupg-hermes.hf.space/hermes
-```
-
-with the `API_SERVER_KEY` as the API key. The bridge accepts Anthropic `POST /v1/messages` requests, translates them to the upstream's OpenAI format, forwards them to the Hermes agent (persona + memory + tools + OmniRoute brain), and translates the response back (proper JSON for `stream:false`, proper `message_start` / `content_block_delta` / `message_stop` SSE for `stream:true`).
-
-### Python OpenAI SDK
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    base_url="https://jishnupg-hermes.hf.space/v1",
-    api_key="<your API_SERVER_KEY>",
-)
-
-response = client.chat.completions.create(
-    model="auto/best-coding",   # routed through OmniRoute
-    messages=[{"role": "user", "content": "Search the web for the latest AI news"}],
-)
-print(response.choices[0].message.content)
+```text
+                               ┌────────────────────────────────┐
+                               │       Client Ingestion         │
+                               │  (Claude Mobile / Web / App)   │
+                               └───────────────┬────────────────┘
+                                               │
+                                               ▼
+                              ┌─────────────────────────────────┐
+                              │       Nginx Reverse Proxy       │
+                              │ (SSL / WebSocket / Buffering)   │
+                              └───────────────┬─────────────────┘
+                                               │
+                                               ▼
+                              ┌─────────────────────────────────┐
+                              │      FastAPI Hermes Gateway     │
+                              │         (Port 7860/8642)        │
+                              └───────┬───────────────┬─────────┘
+                                      │               │
+            ┌─────────────────────────┴────┐   ┌──────┴────────────────────────┐
+            ▼                              ▼   ▼                               ▼
+  ┌──────────────────┐    ┌─────────────────┐ ┌──────────────────┐  ┌──────────────────┐
+  │  Agent Executor  │    │ 24/7 Background │ │   Ignis Server   │  │ OmniRoute Engine │
+  │ (Tools / Skills) │    │  Task Daemon    │ │ (Obsidian Notes) │  │  (Multi-Provider)│
+  └─────────┬────────┘    └────────┬────────┘ └──────────────────┘  └──────────────────┘
+            │                      │
+            ▼                      ▼
+  ┌─────────────────────────────────────────┐
+  │         Persistent Server Disk          │
+  │  (/data/hermes/conversations & tasks)   │
+  └─────────────────────────────────────────┘
 ```
 
 ---
 
-## 🔐 Environment Variables (Space Secrets)
+## 🚀 Core Backend Modules (`gateway/`)
 
-| Variable | Description | Default |
-|---|---|---|
-| `OMNIROUTE_BASE_URL` | OmniRoute OpenAI-compatible base URL | `https://jishnupg-opencode-cli.hf.space/v1` |
-| `OMNIROUTE_API_KEY` | OmniRoute API key used by Hermes as its LLM brain | `sk-2e556e0437ee2958-7baf2d-b4133935` |
-| `HERMES_MODEL` | Default model routed through OmniRoute | `auto/best-coding` |
-| `API_SERVER_KEY` | Bearer key clients use to call the Hermes API server | falls back to `OMNIROUTE_API_KEY` |
-| `HERMES_INTERNAL_PORT` | Hermes agent API server port (localhost only) | `8642` |
-| `PUBLIC_PORT` | Public gateway port (HF `app_port`) | `7860` |
-| `ANTHROPIC_BRIDGE_UPSTREAM_URL` | Bridge upstream OpenAI endpoint (Hermes agent) | `http://127.0.0.1:8642/v1/chat/completions` |
-| `ANTHROPIC_BRIDGE_UPSTREAM_KEY` | Bridge upstream API key | falls back to `OMNIROUTE_API_KEY` |
-| `ANTHROPIC_BRIDGE_UPSTREAM_MODEL` | Model the bridge sends upstream | `auto/best-coding` |
+### 1. `claude_rest_api.py` — Native Anthropic REST API Implementation
+- Implements `/api/organizations/{org}/chat_conversations/{chat_id}/completion` with live chunk-by-chunk SSE streaming.
+- **Immediate State Pre-registration**: Creates assistant message placeholder nodes instantly on user prompt submission, eliminating mobile UI pending stalls.
+- **Asynchronous AI Title Generator**: Automatically generates concise 3–6 word conversation titles in the background upon chat creation.
+
+### 2. `agent_executor.py` — Universal Multi-Turn Autonomous Tool Engine
+- Executes server-level capabilities:
+  - `bash`: Shell execution with timeout protection and stdout/stderr capture.
+  - `read_file`, `write_file`, `list_dir`: Safe filesystem access.
+  - `schedule_task`, `list_background_tasks`, `stop_background_task`: 24/7 background job control.
+  - `activate_skill`, `list_skills`: Dynamic domain persona activation (`python-pro`, `fastapi-pro`, `docker-expert`, `database-architect`, `security-auditor`, `systematic-debugging`).
+- **Dual-Mode Multi-Turn Loop**: Seamlessly executes tool requests, streams status indicators (`*Executing bash*`), and continues reasoning until producing complete, structured markdown reports.
+
+### 3. `background_agent.py` — 24/7 Persistent Background Daemon
+- Schedules recurring autonomous tasks (cron intervals from seconds to days).
+- Persists task definitions and run logs in `/data/hermes/scheduled_tasks.json`.
+- Runs continuously on the server even when the user closes the mobile app.
+
+### 4. `telemetry.py` — Live Mobile Log Streaming & Dashboard
+- Ingests events from the Android APK via `/api/telemetry/log`.
+- Broadcasts logs in real-time over WebSockets (`/ws/logs`) to the live dashboard webapp.
+
+### 5. `health_doctor.py` & `clean_db.py` — Self-Healing Infrastructure
+- Key-Hash Guard detects encryption key changes to prevent database corruption.
+- Automated migrations and SQLite3 table repairs during container initialization.
 
 ---
 
-## 📁 Persistence
+## 🛠️ Local Development & Deployment
 
-Hermes memory (`MEMORY.md`, `USER.md`), generated skills (`skills/`), and session history (`sessions/`) live in `~/.hermes` inside the container. Every 15 seconds they are synced to the Space's persistent `/data/hermes` volume and restored on boot.
-
----
-
-## 🏗️ Architecture
-
-```
-Claude Android app (patched)          OpenAI SDK / other clients
-        │  Anthropic Messages                │  OpenAI API
-        ▼                                    ▼
-        └────────────► Public Gateway  https://jishnupg-hermes.hf.space:7860
-                              │
-              ┌───────────────┴────────────────┐
-              ▼ (Anthropic bridge, in-process) ▼ (reverse proxy)
-        /hermes/v1/messages              /v1/* , /health
-              │                                   │
-              └────────┐                          │
-                       ▼                          ▼
-                Hermes Agent API Server  (127.0.0.1:8642, localhost)
-                       │  persona + memory + skills + tools + agent loop
-                       ▼
-                OmniRoute AI Gateway (LLM brain, auto/best-coding)
-                       │
-                       ▼
-                Cloud LLM Providers
+### Run Locally with Docker
+```bash
+docker build -t hermes-backend .
+docker run -p 7860:7860 -v hermes_data:/data hermes-backend
 ```
 
-`config.yaml` (bootstrap):
-
-```yaml
-model:
-  provider: omniroute
-  default: auto/best-coding
-
-providers:
-  omniroute:
-    base_url: https://jishnupg-opencode-cli.hf.space/v1
-    api_key: <secret>
-
-memory:
-  enabled: true
-  sqlite_fts5: true
-
-gateway:
-  platforms:
-    api_server:
-      enabled: true
-      host: 127.0.0.1
-      port: 8642
-      key: <API_SERVER_KEY>
-      cors_origins: "*"
+### Environment Variables (`.env`)
+```bash
+OMNIROUTE_URL=http://127.0.0.1:20128/v1
+HERMES_MODEL=auto/smart
+PUBLIC_PORT=7860
+DATA_DIR=/data
 ```
-
-To override the backend at deploy time, set the `OMNIROUTE_BASE_URL` / `OMNIROUTE_API_KEY` / `HERMES_MODEL` / `API_SERVER_KEY` Space secrets.# Force wake 08/25/2026 17:23:54
