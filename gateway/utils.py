@@ -31,12 +31,18 @@ _HOP_BY_HOP = {
 }
 
 
-def build_upstream_headers(request: Request, extra_headers=None) -> dict:
+from urllib.parse import urlparse
+
+def build_upstream_headers(request: Request, extra_headers=None, target_url=None) -> dict:
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_BY_HOP and k.lower() not in ("host", "user-agent")
     }
-    headers["Host"] = PUBLIC_HOST
+    if target_url and target_url.startswith("http"):
+        parsed = urlparse(target_url)
+        headers["Host"] = parsed.netloc
+    else:
+        headers["Host"] = PUBLIC_HOST
     headers["X-Forwarded-Host"] = PUBLIC_HOST
     headers["X-Forwarded-Proto"] = "https"
     headers["X-Forwarded-Port"] = "443"
@@ -52,7 +58,7 @@ def build_upstream_headers(request: Request, extra_headers=None) -> dict:
 
 async def proxy_http_request(target_url, request, extra_headers=None, html_fixup=None):
     client = get_http_client()
-    headers = build_upstream_headers(request, extra_headers)
+    headers = build_upstream_headers(request, extra_headers, target_url=target_url)
     body = await request.body()
     req = client.build_request(
         method=request.method,

@@ -10,6 +10,7 @@ from gateway.hermes_proxy import router as hermes_proxy_router
 from gateway.omniroute import router as omniroute_router
 from gateway.ignis import router as ignis_router
 from gateway.claude_rest_api import router as claude_rest_router
+from gateway.telemetry import router as telemetry_router
 
 app = FastAPI(
     title="Hermes Agent Space Gateway",
@@ -38,9 +39,11 @@ async def normalize_hermes_paths(request: Request, call_next):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/mobile"):
         cleaned_path = cleaned_path[len("/hermes"):]
-    elif cleaned_path.startswith("/hermes/v1/code") or cleaned_path.startswith("/hermes/v1/sessions"):
+    elif cleaned_path.startswith("/hermes/v1/code") or cleaned_path.startswith("/hermes/v1/sessions") or cleaned_path.startswith("/hermes/v1/b"):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/code"):
+        cleaned_path = cleaned_path[len("/hermes"):]
+    elif cleaned_path.startswith("/hermes/telemetry") or cleaned_path.startswith("/hermes/live-logs") or cleaned_path.startswith("/hermes/ws"):
         cleaned_path = cleaned_path[len("/hermes"):]
     elif cleaned_path.startswith("/hermes/artifacts"):
         cleaned_path = cleaned_path[len("/hermes"):]
@@ -49,12 +52,21 @@ async def normalize_hermes_paths(request: Request, call_next):
     return await call_next(request)
 
 # Order matters: exact routes BEFORE catch-all proxy
+app.include_router(telemetry_router)
 app.include_router(anthropic_router)
 app.include_router(v1_sessions_router)  # v1 Sessions & Code API - MUST be before hermes_proxy catch-all
 app.include_router(claude_rest_router)
 app.include_router(omniroute_router)
 app.include_router(ignis_router)
 app.include_router(hermes_proxy_router)  # Catch-all proxy for /v1/* and /health/*
+
+@app.on_event("startup")
+async def on_startup():
+    try:
+        from gateway.background_agent import start_all_saved_jobs
+        start_all_saved_jobs()
+    except Exception as e:
+        print(f"Error starting background agent tasks: {e}")
 
 
 # ── Root & Health ───────────────────────────────────────────────
@@ -189,6 +201,21 @@ async def logs_service(service: str):
         content = f"(error: {e})"
     return HTMLResponse(f"<pre style='font-family:monospace;background:#0d1117;color:#c9d1d9;padding:16px'>{content}</pre>")
 
+@app.on_event("startup")
+async def on_startup():
+    try:
+        from gateway import channels_manager
+        await channels_manager.start_all_channels()
+    except Exception as e:
+        print(f"Error starting channels manager: {e}")
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    try:
+        from gateway import channels_manager
+        await channels_manager.stop_all_channels()
+    except Exception as e:
+        pass
 
 # ── Catch-all proxy -> Hermes agent ─────────────────────────────
 app.include_router(hermes_proxy_router)

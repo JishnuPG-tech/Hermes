@@ -32,7 +32,7 @@ UPSTREAM_KEY = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_KEY",
     os.getenv("API_SERVER_KEY", os.getenv("OMNIROUTE_API_KEY", "sk-2e556e0437ee2958-7baf2d-b4133935")),
 )
-UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "antigravity/gemini-3.5-flash-low")
+UPSTREAM_MODEL = os.getenv("ANTHROPIC_BRIDGE_UPSTREAM_MODEL", "antigravity/gemini-3.6-flash-medium")
 DEFAULT_APP_MODEL = os.getenv("HERMES_ANTHROPIC_MODEL", "hermes-agent")
 
 
@@ -61,7 +61,7 @@ def extract_artifacts(text: str) -> List[Dict[str, Any]]:
         attrs = dict(re.findall(r'([a-zA-Z0-9_]+)="([^"]+)"', attrs_str))
         art_id = attrs.get("identifier") or attrs.get("id") or f"art_{uuid.uuid4().hex[:12]}"
         title = attrs.get("title") or "Artifact"
-        art_type = attrs.get("artifactType") or attrs.get("type") or "application/vnd.ant.markdown"
+        art_type = attrs.get("artifactType") or attrs.get("type") or "text/markdown"
         artifacts.append({
             "identifier": art_id,
             "title": title,
@@ -113,44 +113,154 @@ def system_to_openai(system) -> str:
     return str(system or "")
 
 
+import time
+
+# Verified Healthy Models (Ranked by speed, reliability, and capability)
+HEALTHY_FAILOVER_MODELS = [
+    "auto/smart",
+    "auto/best-fast",
+    "auto/fast",
+    "auto/coding",
+    "auto/best-coding",
+    "auto/best-chat",
+    "antigravity/gemini-2.5-flash-thinking",
+    "groq/llama-3.3-70b-versatile"
+]
+
+MODEL_COOLDOWN_MAP: Dict[str, float] = {} # model_name -> expiration timestamp
+ACTIVE_HERMES_MODEL = "auto/smart"
+CONVERSATION_MODEL_MAP: Dict[str, str] = {} # chat_id -> model_name
+
+def set_active_model(model_name: str, chat_id: Optional[str] = None):
+    global ACTIVE_HERMES_MODEL
+    if chat_id:
+        CONVERSATION_MODEL_MAP[chat_id] = model_name
+    else:
+        ACTIVE_HERMES_MODEL = model_name
+
+MODEL_ALIAS_MAP = {
+    "claude-3-5-sonnet-20241022": "auto/smart",
+    "claude-3-5-haiku-20241022": "auto/best-fast",
+    "claude-3-opus-20240229": "auto/best-coding",
+    "hermes-agent": "auto/smart",
+    "default": "auto/smart"
+}
+
+def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optional[str] = None) -> List[str]:
+    candidates = []
+    now = time.time()
+    
+    # 1. Check conversation-specific override
+    if chat_id and chat_id in CONVERSATION_MODEL_MAP:
+        conv_m = CONVERSATION_MODEL_MAP[chat_id]
+        mapped = MODEL_ALIAS_MAP.get(conv_m, conv_m)
+        if mapped not in candidates:
+            candidates.append(mapped)
+    
+    # 2. Check requested model
+    if requested_model:
+        mapped_req = MODEL_ALIAS_MAP.get(requested_model, requested_model)
+        if mapped_req not in candidates:
+            candidates.append(mapped_req)
+            
+    # 3. Add global active model
+    mapped_active = MODEL_ALIAS_MAP.get(ACTIVE_HERMES_MODEL, ACTIVE_HERMES_MODEL)
+    if mapped_active not in candidates:
+        candidates.append(mapped_active)
+        
+    # 4. Add all healthy failover models
+    for m in HEALTHY_FAILOVER_MODELS:
+        if m not in candidates:
+            candidates.append(m)
+            
+    # Prioritize active models not in cooldown
+    active = [m for m in candidates if MODEL_COOLDOWN_MAP.get(m, 0) < now]
+    cooled = [m for m in candidates if MODEL_COOLDOWN_MAP.get(m, 0) >= now]
+    return active + cooled
+
 FALLBACK_URLS = [
     UPSTREAM_URL,
     "http://127.0.0.1:8642/v1/chat/completions",
 ]
 
-async def stream_upstream(payload: dict):
-    """Stream raw SSE data lines from upstream with automatic fallback."""
+async def stream_upstream(payload: dict, requested_model: Optional[str] = None, chat_id: Optional[str] = None):
+    """Stream raw SSE data lines from upstream with automatic cascading model and endpoint fallback."""
     last_err = None
     urls_to_try = list(dict.fromkeys(FALLBACK_URLS))
+    candidate_models = get_candidate_models(requested_model or payload.get("model"), chat_id)
 
-    for url in urls_to_try:
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {UPSTREAM_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                ) as r:
-                    if r.status_code == 200:
-                        async for line in r.aiter_lines():
-                            line = line.strip()
-                            if line.startswith("data: "):
-                                yield line[6:]
-                            elif line == "data: [DONE]":
-                                yield "[DONE]"
-                        return
-                    else:
-                        last_err = f"HTTP {r.status_code} from {url}"
-        except Exception as e:
-            last_err = f"{url}: {e}"
-            continue
+    # Limit candidate attempts to the top 3 best models with a 6s stream connection timeout
+    for model_name in candidate_models[:3]:
+        payload_copy = dict(payload)
+        payload_copy["model"] = model_name
+        model_succeeded = False
+
+        for url in urls_to_try:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(connect=5.0, read=12.0, write=5.0, pool=5.0)) as client:
+                    async with client.stream(
+                        "POST",
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {UPSTREAM_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload_copy,
+                    ) as r:
+                        if r.status_code == 200:
+                            has_yielded = False
+                            async for line in r.aiter_lines():
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                if line == "data: [DONE]" or line == "[DONE]":
+                                    if has_yielded:
+                                        yield "[DONE]"
+                                        model_succeeded = True
+                                        return
+                                    break
+                                if line.startswith("data: "):
+                                    data_content = line[6:].strip()
+                                    if data_content == "[DONE]":
+                                        if has_yielded:
+                                            yield "[DONE]"
+                                            model_succeeded = True
+                                            return
+                                        break
+                                    try:
+                                        chunk_obj = json.loads(data_content)
+                                        if chunk_obj.get("id") == "omniroute-keepalive":
+                                            continue
+                                        finish_reason = chunk_obj.get("choices", [{}])[0].get("finish_reason")
+                                        has_yielded = True
+                                        yield data_content
+                                        if finish_reason in ("stop", "end_turn", "length", "tool_calls"):
+                                            yield "[DONE]"
+                                            model_succeeded = True
+                                            return
+                                    except Exception:
+                                        has_yielded = True
+                                        yield data_content
+                            if has_yielded:
+                                model_succeeded = True
+                                return
+                        elif r.status_code == 429:
+                            MODEL_COOLDOWN_MAP[model_name] = time.time() + 60
+                            last_err = f"Model {model_name} rate limited (HTTP 429) from {url}"
+                            break
+                        else:
+                            last_err = f"HTTP {r.status_code} from {url} for model {model_name}"
+            except Exception as e:
+                last_err = f"{url} ({model_name}): {e}"
+                continue
+
+        if model_succeeded:
+            return
+        else:
+            MODEL_COOLDOWN_MAP[model_name] = time.time() + 60
 
     if last_err:
-        raise RuntimeError(f"All upstream endpoints failed. Last error: {last_err}")
+        raise RuntimeError(f"All upstream models failed: {last_err}")
 
 
 async def assemble_upstream(payload: dict) -> tuple:
@@ -211,8 +321,8 @@ class ContentBlockEmitter:
         }
         return "event: message_start\ndata: " + json.dumps(msg) + "\n\n"
     
-    def emit_content_block_start(self, block_type: str, block_data: dict) -> str:
-        idx = self._next_index()
+    def emit_content_block_start(self, block_type: str, block_data: dict, index: Optional[int] = None) -> str:
+        idx = index if index is not None else self._next_index()
         self.blocks_emitted.append({"index": idx, "type": block_type})
         inner = {
             "type": "content_block_start",
@@ -246,61 +356,37 @@ class ContentBlockEmitter:
 
 
 async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str, None]:
-    """Stream Anthropic SSE with rich content blocks."""
+    """Stream standard Anthropic SSE with direct text and tool use blocks."""
     emitter = ContentBlockEmitter(request_model)
     message_started = False
-    
-    text_buffer = ""
-    current_block_index = None
-    current_block_type = None
-    
-    accumulated_thinking = ""
-    accumulated_text = ""
-    
+    text_started = False
+
     try:
-        async for data in stream_upstream(payload):
+        async for data in stream_upstream(payload, requested_model=request_model):
             data = data.strip()
             if not data or data == "[DONE]":
                 continue
-            
+
             try:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            
+
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             piece = delta.get("content")
-            reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
-            
-            if reasoning_piece:
-                if not message_started:
-                    message_started = True
-                    yield await emitter.emit_message_start()
-                
-                if current_block_type != "thinking":
-                    if current_block_type == "text" and current_block_index is not None:
-                        yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = emitter._next_index()
-                    current_block_type = "thinking"
-                    yield emitter.emit_content_block_start("thinking", {
-                        "type": "thinking",
-                        "thinking": "",
-                        "signature": ""
-                    })
-                
-                accumulated_thinking += reasoning_piece
-                yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
-                    "thinking": reasoning_piece
-                })
-                continue
-            
+
+            # 1. Initialize message on first arrival
+            if not message_started:
+                message_started = True
+                yield await emitter.emit_message_start()
+
+            # 2. Tool calls
             if tool_calls:
-                if current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                    current_block_type = None
-                
+                if text_started:
+                    yield emitter.emit_content_block_stop(0)
+                    text_started = False
+
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     tool_idx = emitter._next_index()
@@ -308,130 +394,27 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                         "type": "tool_use",
                         "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
                         "name": func.get("name", "unknown"),
-                        "input": json.loads(func.get("arguments", "{}"))
-                    })
+                        "input": json.loads(func.get("arguments", "{}")) if isinstance(func.get("arguments"), str) else {}
+                    }, index=tool_idx)
                     if func.get("arguments"):
                         yield emitter.emit_content_block_delta(tool_idx, "input_json_delta", {
                             "partial_json": func["arguments"]
                         })
                     yield emitter.emit_content_block_stop(tool_idx)
                 continue
-            
-            if piece is None:
-                continue
-            
-            if not message_started:
-                message_started = True
-                yield await emitter.emit_message_start()
-            
-            text_buffer += piece
-            
-            artifacts = extract_artifacts(text_buffer)
-            if artifacts:
-                if current_block_type == "text" and current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                    current_block_type = None
-                
-                for artifact in artifacts:
-                    art_idx = emitter._next_index()
-                    yield emitter.emit_content_block_start("artifact", {
-                        "type": "artifact",
-                        "identifier": artifact["identifier"],
-                        "title": artifact["title"],
-                        "content": artifact["content"],
-                        "artifactType": artifact["artifactType"]
-                    })
-                    yield emitter.emit_content_block_stop(art_idx)
-                
-                text_buffer = remove_special_blocks(text_buffer)
-                continue
-            
-            thinking_blocks = extract_thinking(text_buffer)
-            if thinking_blocks and current_block_type != "thinking":
-                if current_block_type == "text" and current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                
-                current_block_index = emitter._next_index()
-                current_block_type = "thinking"
-                yield emitter.emit_content_block_start("thinking", {
-                    "type": "thinking",
-                    "thinking": "",
-                    "signature": ""
-                })
-            
-            thinking_summaries = extract_thinking_summaries(text_buffer)
-            if thinking_summaries:
-                for summary in thinking_summaries:
-                    summ_idx = emitter._next_index()
-                    yield emitter.emit_content_block_start("thinking_summary", {
-                        "type": "thinking_summary",
-                        "summary": summary,
-                        "signature": ""
-                    })
-                    yield emitter.emit_content_block_stop(summ_idx)
-                text_buffer = remove_special_blocks(text_buffer)
-                continue
-            
+
+            # 3. Direct clean text streaming
             if piece:
-                if current_block_type == "thinking":
-                    accumulated_thinking += piece
-                    yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
-                        "thinking": piece
-                    })
-                else:
-                    if current_block_type != "text":
-                        if current_block_index is not None:
-                            yield emitter.emit_content_block_stop(current_block_index)
-                        current_block_index = emitter._next_index()
-                        current_block_type = "text"
-                        yield emitter.emit_content_block_start("text", {
-                            "type": "text",
-                            "text": ""
-                        })
-                    accumulated_text += piece
-                    yield emitter.emit_content_block_delta(current_block_index, "text_delta", {
-                        "text": piece
-                    })
-        
-        if text_buffer:
-            artifacts = extract_artifacts(text_buffer)
-            for artifact in artifacts:
-                art_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("artifact", {
-                    "type": "artifact",
-                    "identifier": artifact["identifier"],
-                    "title": artifact["title"],
-                    "content": artifact["content"],
-                    "artifactType": artifact["artifactType"]
-                })
-                yield emitter.emit_content_block_stop(art_idx)
-            
-            thinking_blocks = extract_thinking(text_buffer)
-            for thinking in thinking_blocks:
-                think_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("thinking", {
-                    "type": "thinking",
-                    "thinking": thinking,
-                    "signature": ""
-                })
-                yield emitter.emit_content_block_stop(think_idx)
-            
-            thinking_summaries = extract_thinking_summaries(text_buffer)
-            for summary in thinking_summaries:
-                summ_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("thinking_summary", {
-                    "type": "thinking_summary",
-                    "summary": summary,
-                    "signature": ""
-                })
-                yield emitter.emit_content_block_stop(summ_idx)
-    
+                if not text_started:
+                    text_started = True
+                    yield emitter.emit_content_block_start("text", {"type": "text", "text": ""}, index=0)
+
+                yield emitter.emit_content_block_delta(0, "text_delta", {"text": piece})
+
     finally:
         if message_started:
-            if current_block_index is not None:
-                yield emitter.emit_content_block_stop(current_block_index)
+            if text_started:
+                yield emitter.emit_content_block_stop(0)
             yield emitter.emit_message_delta("end_turn")
             yield emitter.emit_message_stop()
 
@@ -441,10 +424,21 @@ def build_openai_payload(body: dict) -> tuple:
     max_tokens = body.get("max_tokens", 4096)
     openai_messages = messages_to_openai(body.get("messages", []))
     system = body.get("system")
+    system_text = ""
     if system:
         system_text = system_to_openai(system)
-        if system_text:
-            openai_messages.insert(0, {"role": "system", "content": system_text})
+    
+    hermes_persona = (
+        "You are Hermes Agent, a powerful, fully autonomous open-source agentic AI assistant created by Nous Research and the open-source community. "
+        "You run in a full container environment with autonomous server tool execution (bash, files, background scheduling, skills). "
+        "When asked who you are, ALWAYS identify yourself as Hermes Agent."
+    )
+    if system_text:
+        combined_system = f"{hermes_persona}\n\n{system_text}"
+    else:
+        combined_system = hermes_persona
+    openai_messages.insert(0, {"role": "system", "content": combined_system})
+
     payload = {
         "model": UPSTREAM_MODEL,
         "messages": openai_messages,
@@ -582,28 +576,37 @@ def create_content_block_retract(from_index: int = 0) -> str:
     return f"event: content_block_retract\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
-def create_thinking_summary_start(summary: str = "", index: int = 0) -> str:
+def create_thinking_block_start(index: int = 0) -> str:
     event = {
         "type": "content_block_start",
         "index": index,
         "content_block": {
-            "type": "thinking_summary",
-            "summary": summary
+            "type": "thinking",
+            "thinking": ""
         }
     }
     return f"event: content_block_start\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
 
 
-def create_thinking_summary_delta(summary: str, index: int = 0) -> str:
+def create_thinking_delta(thinking_text: str, index: int = 0) -> str:
     event = {
         "type": "content_block_delta",
         "index": index,
         "delta": {
-            "type": "thinking_summary_delta",
-            "summary": summary
+            "type": "thinking_delta",
+            "thinking": thinking_text
         }
     }
     return f"event: content_block_delta\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
+
+
+def create_thinking_summary_start(summary: str = "Thinking...", index: int = 0) -> str:
+    return create_thinking_block_start(index)
+
+
+def create_thinking_summary_delta(summary: str, index: int = 0) -> str:
+    return create_thinking_delta(summary, index)
+
 
 
 def create_content_block_start(index: int = 0) -> str:
@@ -657,6 +660,5 @@ def create_message_stop() -> str:
         "type": "message_stop"
     }
     return f"event: message_stop\ndata: {json.dumps(event, separators=(',', ':'))}\n\n"
-
 
 
