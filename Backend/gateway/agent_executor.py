@@ -20,10 +20,8 @@ DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 SKILLS_DIR = Path("/data/hermes/skills") if Path("/data/hermes").exists() else Path("/tmp/hermes/skills")
 SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Active skills per conversation: chat_id -> list of skill names
 ACTIVE_CONVERSATION_SKILLS: Dict[str, List[str]] = {}
 
-# Built-in Skills Catalog
 BUILTIN_SKILLS = {
     "python-pro": {
         "name": "python-pro",
@@ -62,7 +60,6 @@ BUILTIN_SKILLS = {
     }
 }
 
-# OpenAI-compatible Function Tool Definitions
 AGENT_TOOLS = [
     {
         "type": "function",
@@ -149,7 +146,7 @@ AGENT_TOOLS = [
                 "properties": {
                     "skill_name": {
                         "type": "string",
-                        "description": "The name of the skill to activate (e.g., 'python-pro', 'fastapi-pro', 'code-reviewer', 'docker-expert', 'database-architect', 'security-auditor', 'systematic-debugging')."
+                        "description": "The name of the skill to activate."
                     }
                 },
                 "required": ["skill_name"]
@@ -171,13 +168,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "schedule_task",
-            "description": "Schedule an autonomous 24/7 background task that runs continuously on the server without needing the APK open.",
+            "description": "Schedule an autonomous 24/7 background task that runs continuously on the server.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "A short, descriptive name for the task (e.g., 'Hourly Server Health Check', 'Crypto Scraper', 'Disk Monitor')."
+                        "description": "A short, descriptive name for the task."
                     },
                     "instruction": {
                         "type": "string",
@@ -185,7 +182,7 @@ AGENT_TOOLS = [
                     },
                     "interval_seconds": {
                         "type": "integer",
-                        "description": "How often to run the task in seconds (e.g., 300 for every 5 min, 3600 for hourly, 86400 for daily)."
+                        "description": "How often to run the task in seconds."
                     },
                     "task_type": {
                         "type": "string",
@@ -205,7 +202,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "list_background_tasks",
-            "description": "List all persistent 24/7 background tasks running on the server and their status.",
+            "description": "List all persistent 24/7 background tasks running on the server.",
             "parameters": {
                 "type": "object",
                 "properties": {}
@@ -222,7 +219,7 @@ AGENT_TOOLS = [
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "The ID of the task to stop (e.g., 'task_a1b2c3d4e5f6')."
+                        "description": "The ID of the task to stop."
                     }
                 },
                 "required": ["task_id"]
@@ -437,8 +434,8 @@ def build_system_prompt_with_skills(chat_id: str) -> str:
         "   - `stop_background_task`: Stop a background task by ID.\n"
         "   - `activate_skill`: Dynamically activate specialized domain skills.\n"
         "   - `list_skills`: View all available skills.\n"
-        "2. When you execute a tool (e.g. `bash` or `read_file`), after receiving the tool result you MUST ALWAYS continue your analysis and provide a complete, detailed, and thorough final answer explaining the findings, code, or results.\n"
-        "3. NEVER stop right after running a command. Always analyze and present the complete requested information.\n\n"
+        "2. When you execute tools, after receiving results you MUST ALWAYS synthesize your findings and provide a complete, detailed, clean user-facing response.\n"
+        "3. NEVER stop right after running a command. Always summarize and present the complete requested information.\n\n"
         "# Artifacts Guidelines:\n"
         "When generating complete, substantial, or self-contained documents, web pages, code files, or diagrams, ALWAYS wrap the content in an `<antArtifact>` tag so it renders as an interactive card in the app:\n"
         "<antArtifact identifier=\"unique-id\" type=\"application/vnd.ant.markdown\" title=\"Title\">\n"
@@ -491,7 +488,6 @@ async def run_autonomous_agent(
     thinking_active = False
     text_active = False
 
-    # Check for direct slash commands
     skill_match = re.search(r'(?:^/skill\s+|activate\s+(?:the\s+)?skill\s+|use\s+(?:the\s+)?skill\s+)([a-zA-Z0-9_\-]+)', prompt, re.IGNORECASE)
     if skill_match:
         sname = skill_match.group(1).strip().lower()
@@ -522,21 +518,24 @@ async def run_autonomous_agent(
     max_turns = 10
     thinking_block_idx = 0
     text_block_idx = 1
+    had_tool_execution = False
 
     for turn in range(max_turns):
+        # In turns after tools have executed, force synthesis if max turns near or tools done
+        include_tools = turn < (max_turns - 1)
         payload = {
             "model": model or "auto/smart",
             "messages": openai_messages,
-            "tools": AGENT_TOOLS,
-            "tool_choice": "auto",
             "stream": True
         }
+        if include_tools:
+            payload["tools"] = AGENT_TOOLS
+            payload["tool_choice"] = "auto"
 
         turn_text = ""
         tool_calls = []
-        turn_reasoning = ""
 
-        # Stream upstream tokens live
+        # Stream upstream tokens
         try:
             async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
                 data = data.strip()
@@ -554,11 +553,11 @@ async def run_autonomous_agent(
                 # Check for model native reasoning
                 reasoning_chunk = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning_chunk:
-                    if not thinking_active:
+                    if not thinking_active and not text_active:
                         await queue.put(ab.create_thinking_block_start(thinking_block_idx))
                         thinking_active = True
-                    await queue.put(ab.create_thinking_block_delta(reasoning_chunk, thinking_block_idx))
-                    turn_reasoning += reasoning_chunk
+                    if thinking_active:
+                        await queue.put(ab.create_thinking_block_delta(reasoning_chunk, thinking_block_idx))
 
                 text_delta = delta.get("content", "")
                 if not text_delta:
@@ -597,20 +596,19 @@ async def run_autonomous_agent(
                     "function": {"name": tname, "arguments": json.dumps(targs)}
                 })
 
-        # If turn produced assistant text, add to history
-        if turn_text.strip():
-            openai_messages.append({"role": "assistant", "content": turn_text})
-
         # CASE 1: Tools are being executed in this turn -> Stream to THINKING block
         if tool_calls:
-            if not thinking_active:
+            had_tool_execution = True
+            if not thinking_active and not text_active:
                 await queue.put(ab.create_thinking_block_start(thinking_block_idx))
                 thinking_active = True
 
             # If the model had some intermediate thought text before tool calls, route to thinking
-            if turn_text.strip():
+            if turn_text.strip() and thinking_active:
                 clean_thought = turn_text.strip() + "\n"
                 await queue.put(ab.create_thinking_block_delta(clean_thought, thinking_block_idx))
+
+            openai_messages.append({"role": "assistant", "content": turn_text or "Executing requested tools..."})
 
             # Execute all tool calls and stream execution logs into THINKING block
             for tc in tool_calls:
@@ -635,13 +633,14 @@ async def run_autonomous_agent(
                     tool_thought += f": {fn_args['task_id']}"
                 tool_thought += "*\n"
 
-                await queue.put(ab.create_thinking_block_delta(tool_thought, thinking_block_idx))
+                if thinking_active:
+                    await queue.put(ab.create_thinking_block_delta(tool_thought, thinking_block_idx))
 
                 # Execute tool safely
                 tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
 
                 # Emit tool stdout preview inside thinking block
-                if tool_result:
+                if tool_result and thinking_active:
                     out_preview = f"```\n{tool_result[:1000]}\n```\n"
                     await queue.put(ab.create_thinking_block_delta(out_preview, thinking_block_idx))
 
@@ -653,21 +652,48 @@ async def run_autonomous_agent(
 
         # CASE 2: No more tools called -> This is the FINAL USER-FACING RESPONSE!
         else:
+            # If we had empty text after tools, make a direct synthesis request to ensure complete answer
+            if had_tool_execution and not turn_text.strip():
+                synth_messages = list(openai_messages)
+                synth_messages.append({
+                    "role": "user",
+                    "content": "All tools have finished executing. Now synthesize everything into a complete, direct, and well-structured final answer for the user."
+                })
+                synth_payload = {
+                    "model": model or "auto/smart",
+                    "messages": synth_messages,
+                    "stream": True
+                }
+                async for data in ab.stream_upstream(synth_payload, requested_model=model, chat_id=chat_id):
+                    data = data.strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data)
+                    except Exception:
+                        continue
+                    delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+                    td = delta.get("content", "") or ""
+                    if td:
+                        turn_text += td
+
             # Close thinking block if it was active
             if thinking_active:
                 await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
                 thinking_active = False
 
             # Stream clean final user-facing text
+            actual_text_idx = 1 if had_tool_execution else 0
             if not text_active:
-                await queue.put(ab.create_content_block_start(text_block_idx))
+                await queue.put(ab.create_content_block_start(actual_text_idx))
                 text_active = True
 
-            if turn_text:
-                # Remove any stray artifact/thinking tags if model wrapped them
-                clean_final = turn_text
-                await queue.put(ab.create_content_block_delta(clean_final, text_block_idx))
-                full_text += clean_final
+            clean_final = turn_text.strip()
+            if not clean_final:
+                clean_final = "I've completed your request. Let me know if you need any further assistance!"
+
+            await queue.put(ab.create_content_block_delta(clean_final, actual_text_idx))
+            full_text = clean_final
             break
 
     # Clean up stream blocks
@@ -675,13 +701,13 @@ async def run_autonomous_agent(
         await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
 
     if text_active:
-        await queue.put(ab.create_content_block_stop(text_block_idx))
+        actual_text_idx = 1 if had_tool_execution else 0
+        await queue.put(ab.create_content_block_stop(actual_text_idx))
     elif not full_text:
-        # Fallback if no final text was emitted
         reply = "I've completed your request."
-        await queue.put(ab.create_content_block_start(text_block_idx))
-        await queue.put(ab.create_content_block_delta(reply, text_block_idx))
-        await queue.put(ab.create_content_block_stop(text_block_idx))
+        await queue.put(ab.create_content_block_start(0))
+        await queue.put(ab.create_content_block_delta(reply, 0))
+        await queue.put(ab.create_content_block_stop(0))
         full_text = reply
 
     await queue.put(ab.create_message_delta("end_turn"))
