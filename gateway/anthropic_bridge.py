@@ -179,7 +179,6 @@ def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optiona
     return active + cooled
 
 FALLBACK_URLS = [
-    "http://127.0.0.1:20128/v1/chat/completions",
     UPSTREAM_URL,
     "http://127.0.0.1:8642/v1/chat/completions",
 ]
@@ -552,10 +551,21 @@ def build_openai_payload(body: dict) -> tuple:
     max_tokens = body.get("max_tokens", 4096)
     openai_messages = messages_to_openai(body.get("messages", []))
     system = body.get("system")
+    system_text = ""
     if system:
         system_text = system_to_openai(system)
-        if system_text:
-            openai_messages.insert(0, {"role": "system", "content": system_text})
+    
+    hermes_persona = (
+        "You are Hermes Agent, a powerful, fully autonomous open-source agentic AI assistant created by Nous Research and the open-source community. "
+        "You run in a full container environment with autonomous server tool execution (bash, files, background scheduling, skills). "
+        "When asked who you are, ALWAYS identify yourself as Hermes Agent."
+    )
+    if system_text:
+        combined_system = f"{hermes_persona}\n\n{system_text}"
+    else:
+        combined_system = hermes_persona
+    openai_messages.insert(0, {"role": "system", "content": combined_system})
+
     payload = {
         "model": UPSTREAM_MODEL,
         "messages": openai_messages,
