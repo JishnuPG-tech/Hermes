@@ -321,8 +321,8 @@ class ContentBlockEmitter:
         }
         return "event: message_start\ndata: " + json.dumps(msg) + "\n\n"
     
-    def emit_content_block_start(self, block_type: str, block_data: dict) -> str:
-        idx = self._next_index()
+    def emit_content_block_start(self, block_type: str, block_data: dict, index: Optional[int] = None) -> str:
+        idx = index if index is not None else self._next_index()
         self.blocks_emitted.append({"index": idx, "type": block_type})
         inner = {
             "type": "content_block_start",
@@ -356,60 +356,45 @@ class ContentBlockEmitter:
 
 
 async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str, None]:
-    """Stream Anthropic SSE with rich content blocks."""
+    """Stream Anthropic SSE with ephemeral thinking status and clean text streaming."""
     emitter = ContentBlockEmitter(request_model)
     message_started = False
-    
-    text_buffer = ""
-    current_block_index = None
-    current_block_type = None
-    
-    accumulated_thinking = ""
-    accumulated_text = ""
-    
+    thinking_stopped = False
+
     try:
-        async for data in stream_upstream(payload):
+        async for data in stream_upstream(payload, requested_model=request_model):
             data = data.strip()
             if not data or data == "[DONE]":
                 continue
-            
+
             try:
                 chunk = json.loads(data)
             except json.JSONDecodeError:
                 continue
-            
+
             delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
             piece = delta.get("content")
             reasoning_piece = delta.get("reasoning_content") or delta.get("reasoning")
             tool_calls = delta.get("tool_calls")
-            
-            if reasoning_piece:
-                if not message_started:
-                    message_started = True
-                    yield await emitter.emit_message_start()
-                
-                if current_block_type != "thinking":
-                    if current_block_type == "text" and current_block_index is not None:
-                        yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = emitter._next_index()
-                    current_block_type = "thinking"
-                    yield emitter.emit_content_block_start("thinking", {
-                        "type": "thinking",
-                        "thinking": "",
-                        "signature": ""
-                    })
-                
-                accumulated_thinking += reasoning_piece
-                yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
-                    "thinking": reasoning_piece
-                })
+
+            # 1. Initialize message and emit ephemeral thinking block at index 0
+            if not message_started:
+                message_started = True
+                yield await emitter.emit_message_start()
+                # Start thinking block (index 0) for dynamic loading animation text
+                yield emitter.emit_content_block_start("thinking", {"type": "thinking", "thinking": ""}, index=0)
+                yield emitter.emit_content_block_delta(0, "thinking_delta", {"thinking": "Thinking..."})
+
+            # 2. If model sends reasoning, stream reasoning as status update deltas in index 0
+            if reasoning_piece and not thinking_stopped:
+                yield emitter.emit_content_block_delta(0, "thinking_delta", {"thinking": reasoning_piece})
                 continue
-            
+
+            # 3. Handle tool calls cleanly
             if tool_calls:
-                if current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                    current_block_type = None
+                if not thinking_stopped:
+                    thinking_stopped = True
+                    yield emitter.emit_content_block_stop(0)
                 
                 for tc in tool_calls:
                     func = tc.get("function", {})
@@ -418,130 +403,33 @@ async def anthropic_sse(request_model: str, payload: dict) -> AsyncGenerator[str
                         "type": "tool_use",
                         "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
                         "name": func.get("name", "unknown"),
-                        "input": json.loads(func.get("arguments", "{}"))
-                    })
+                        "input": json.loads(func.get("arguments", "{}")) if isinstance(func.get("arguments"), str) else {}
+                    }, index=tool_idx)
                     if func.get("arguments"):
                         yield emitter.emit_content_block_delta(tool_idx, "input_json_delta", {
                             "partial_json": func["arguments"]
                         })
                     yield emitter.emit_content_block_stop(tool_idx)
                 continue
-            
-            if piece is None:
-                continue
-            
-            if not message_started:
-                message_started = True
-                yield await emitter.emit_message_start()
-            
-            text_buffer += piece
-            
-            artifacts = extract_artifacts(text_buffer)
-            if artifacts:
-                if current_block_type == "text" and current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                    current_block_type = None
-                
-                for artifact in artifacts:
-                    art_idx = emitter._next_index()
-                    yield emitter.emit_content_block_start("artifact", {
-                        "type": "artifact",
-                        "identifier": artifact["identifier"],
-                        "title": artifact["title"],
-                        "content": artifact["content"],
-                        "artifactType": artifact["artifactType"]
-                    })
-                    yield emitter.emit_content_block_stop(art_idx)
-                
-                text_buffer = remove_special_blocks(text_buffer)
-                continue
-            
-            thinking_blocks = extract_thinking(text_buffer)
-            if thinking_blocks and current_block_type != "thinking":
-                if current_block_type == "text" and current_block_index is not None:
-                    yield emitter.emit_content_block_stop(current_block_index)
-                    current_block_index = None
-                
-                current_block_index = emitter._next_index()
-                current_block_type = "thinking"
-                yield emitter.emit_content_block_start("thinking", {
-                    "type": "thinking",
-                    "thinking": "",
-                    "signature": ""
-                })
-            
-            thinking_summaries = extract_thinking_summaries(text_buffer)
-            if thinking_summaries:
-                for summary in thinking_summaries:
-                    summ_idx = emitter._next_index()
-                    yield emitter.emit_content_block_start("thinking_summary", {
-                        "type": "thinking_summary",
-                        "summary": summary,
-                        "signature": ""
-                    })
-                    yield emitter.emit_content_block_stop(summ_idx)
-                text_buffer = remove_special_blocks(text_buffer)
-                continue
-            
+
+            # 4. When response text arrives, CLOSE index 0 (thinking) and START index 1 (text)
             if piece:
-                if current_block_type == "thinking":
-                    accumulated_thinking += piece
-                    yield emitter.emit_content_block_delta(current_block_index, "thinking_delta", {
-                        "thinking": piece
-                    })
-                else:
-                    if current_block_type != "text":
-                        if current_block_index is not None:
-                            yield emitter.emit_content_block_stop(current_block_index)
-                        current_block_index = emitter._next_index()
-                        current_block_type = "text"
-                        yield emitter.emit_content_block_start("text", {
-                            "type": "text",
-                            "text": ""
-                        })
-                    accumulated_text += piece
-                    yield emitter.emit_content_block_delta(current_block_index, "text_delta", {
-                        "text": piece
-                    })
-        
-        if text_buffer:
-            artifacts = extract_artifacts(text_buffer)
-            for artifact in artifacts:
-                art_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("artifact", {
-                    "type": "artifact",
-                    "identifier": artifact["identifier"],
-                    "title": artifact["title"],
-                    "content": artifact["content"],
-                    "artifactType": artifact["artifactType"]
-                })
-                yield emitter.emit_content_block_stop(art_idx)
-            
-            thinking_blocks = extract_thinking(text_buffer)
-            for thinking in thinking_blocks:
-                think_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("thinking", {
-                    "type": "thinking",
-                    "thinking": thinking,
-                    "signature": ""
-                })
-                yield emitter.emit_content_block_stop(think_idx)
-            
-            thinking_summaries = extract_thinking_summaries(text_buffer)
-            for summary in thinking_summaries:
-                summ_idx = emitter._next_index()
-                yield emitter.emit_content_block_start("thinking_summary", {
-                    "type": "thinking_summary",
-                    "summary": summary,
-                    "signature": ""
-                })
-                yield emitter.emit_content_block_stop(summ_idx)
-    
+                if not thinking_stopped:
+                    thinking_stopped = True
+                    # Close thinking block 0 -> loading icon animation stops, status text resolves
+                    yield emitter.emit_content_block_stop(0)
+                    # Start text block 1 -> real response text streams cleanly
+                    yield emitter.emit_content_block_start("text", {"type": "text", "text": ""}, index=1)
+
+                yield emitter.emit_content_block_delta(1, "text_delta", {"text": piece})
+
     finally:
         if message_started:
-            if current_block_index is not None:
-                yield emitter.emit_content_block_stop(current_block_index)
+            if not thinking_stopped:
+                yield emitter.emit_content_block_stop(0)
+            else:
+                yield emitter.emit_content_block_stop(1)
+
             yield emitter.emit_message_delta("end_turn")
             yield emitter.emit_message_stop()
 
