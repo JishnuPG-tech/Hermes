@@ -482,10 +482,9 @@ async def run_autonomous_agent(
     msg_id: str,
     queue: asyncio.Queue
 ) -> Tuple[str, str]:
-    """Multi-turn autonomous execution loop with clean, auto-collapsing thinking blocks."""
+    """Autonomous agent loop that runs all tool operations cleanly in background, streaming ONLY the final response."""
     full_text = ""
     full_thinking = ""
-    thinking_active = False
     text_active = False
 
     skill_match = re.search(r'(?:^/skill\s+|activate\s+(?:the\s+)?skill\s+|use\s+(?:the\s+)?skill\s+)([a-zA-Z0-9_\-]+)', prompt, re.IGNORECASE)
@@ -516,7 +515,6 @@ async def run_autonomous_agent(
         openai_messages.append({"role": "user", "content": prompt or "Hello"})
 
     max_turns = 10
-    thinking_block_idx = 0
     had_tool_execution = False
 
     for turn in range(max_turns):
@@ -536,10 +534,8 @@ async def run_autonomous_agent(
         try:
             async for data in ab.stream_upstream(payload, requested_model=model, chat_id=chat_id):
                 data = data.strip()
-                if not data:
+                if not data or data == "[DONE]":
                     continue
-                if data == "[DONE]":
-                    break
                 try:
                     chunk = json.loads(data)
                 except Exception:
@@ -547,16 +543,6 @@ async def run_autonomous_agent(
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
                 
-                # Stream model native reasoning into thinking block
-                reasoning_chunk = delta.get("reasoning_content") or delta.get("reasoning")
-                if reasoning_chunk:
-                    if not thinking_active and not text_active:
-                        await queue.put(ab.create_thinking_block_start(thinking_block_idx))
-                        thinking_active = True
-                    if thinking_active:
-                        await queue.put(ab.create_thinking_block_delta(reasoning_chunk, thinking_block_idx))
-                        full_thinking += reasoning_chunk
-
                 text_delta = delta.get("content", "")
                 if not text_delta:
                     text_delta = chunk.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
@@ -564,7 +550,7 @@ async def run_autonomous_agent(
                 if text_delta:
                     turn_text += text_delta
 
-                # Accumulate native tool calls from delta chunks
+                # Accumulate native tool calls
                 tc_chunk = delta.get("tool_calls")
                 if tc_chunk:
                     for tc in tc_chunk:
@@ -594,18 +580,9 @@ async def run_autonomous_agent(
                     "function": {"name": tname, "arguments": json.dumps(targs)}
                 })
 
-        # CASE 1: Tools are called in this turn -> Stream to THINKING block
+        # CASE 1: Tools are called -> Execute autonomously in background without polluting client stream
         if tool_calls:
             had_tool_execution = True
-            if not thinking_active and not text_active:
-                await queue.put(ab.create_thinking_block_start(thinking_block_idx))
-                thinking_active = True
-
-            if turn_text.strip() and thinking_active:
-                clean_thought = turn_text.strip() + "\n"
-                await queue.put(ab.create_thinking_block_delta(clean_thought, thinking_block_idx))
-                full_thinking += clean_thought
-
             openai_messages.append({"role": "assistant", "content": turn_text or "Executing requested tools..."})
 
             for tc in tool_calls:
@@ -617,43 +594,22 @@ async def run_autonomous_agent(
                 except Exception:
                     fn_args = {}
 
-                tool_thought = f"\n*Executing `{fn_name}`"
-                if "command" in fn_args:
-                    tool_thought += f": {fn_args['command']}"
-                elif "name" in fn_args:
-                    tool_thought += f": {fn_args['name']}"
-                elif "path" in fn_args:
-                    tool_thought += f": {fn_args['path']}"
-                elif "skill_name" in fn_args:
-                    tool_thought += f": {fn_args['skill_name']}"
-                elif "task_id" in fn_args:
-                    tool_thought += f": {fn_args['task_id']}"
-                tool_thought += "*\n"
-
-                if thinking_active:
-                    await queue.put(ab.create_thinking_block_delta(tool_thought, thinking_block_idx))
-                    full_thinking += tool_thought
-
+                # Execute tool safely on server
                 tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
-
-                if tool_result and thinking_active:
-                    out_preview = f"```\n{tool_result[:1000]}\n```\n"
-                    await queue.put(ab.create_thinking_block_delta(out_preview, thinking_block_idx))
-                    full_thinking += out_preview
 
                 openai_messages.append({
                     "role": "user",
                     "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete final response to the user."
                 })
 
-        # CASE 2: No tools called -> This is the FINAL USER-FACING RESPONSE!
+        # CASE 2: No tools called -> THIS IS THE CLEAN FINAL USER-FACING RESPONSE!
         else:
-            # First, close the thinking block cleanly so the Claude Compose UI marks it complete and collapses it!
-            if thinking_active:
-                await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
-                thinking_active = False
+            # Start clean text block 0
+            if not text_active:
+                await queue.put(ab.create_content_block_start(0))
+                text_active = True
 
-            # If we had tool executions previously but the model generated no text in this turn, request explicit synthesis
+            # If we had tool executions previously but the model returned no text on the last turn, request direct synthesis
             if had_tool_execution and not turn_text.strip():
                 synth_messages = list(openai_messages)
                 synth_messages.append({
@@ -666,10 +622,6 @@ async def run_autonomous_agent(
                     "stream": True
                 }
 
-                text_block_idx = 1 if had_tool_execution else 0
-                await queue.put(ab.create_content_block_start(text_block_idx))
-                text_active = True
-
                 async for data in ab.stream_upstream(synth_payload, requested_model=model, chat_id=chat_id):
                     data = data.strip()
                     if not data or data == "[DONE]":
@@ -681,31 +633,21 @@ async def run_autonomous_agent(
                     delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
                     td = delta.get("content", "") or ""
                     if td:
-                        await queue.put(ab.create_content_block_delta(td, text_block_idx))
+                        await queue.put(ab.create_content_block_delta(td, 0))
                         full_text += td
             else:
-                text_block_idx = 1 if had_tool_execution else 0
-                if not text_active:
-                    await queue.put(ab.create_content_block_start(text_block_idx))
-                    text_active = True
-
                 clean_final = turn_text.strip()
                 if not clean_final:
                     clean_final = "I've completed your request. Let me know if you need any further assistance!"
 
-                await queue.put(ab.create_content_block_delta(clean_final, text_block_idx))
+                await queue.put(ab.create_content_block_delta(clean_final, 0))
                 full_text += clean_final
 
             break
 
-    # Clean up stream blocks with exact single stop calls
-    if thinking_active:
-        await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
-        thinking_active = False
-
+    # Clean up single text block
     if text_active:
-        text_block_idx = 1 if had_tool_execution else 0
-        await queue.put(ab.create_content_block_stop(text_block_idx))
+        await queue.put(ab.create_content_block_stop(0))
         text_active = False
     elif not full_text:
         reply = "I've completed your request."
@@ -716,4 +658,4 @@ async def run_autonomous_agent(
 
     await queue.put(ab.create_message_delta("end_turn"))
     await queue.put(ab.create_message_stop())
-    return full_text, full_thinking
+    return full_text, ""
