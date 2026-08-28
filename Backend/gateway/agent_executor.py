@@ -7,9 +7,12 @@ import asyncio
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple, AsyncGenerator
+import logging
 import httpx
 from gateway import anthropic_bridge as ab
 from gateway import background_agent as bg
+
+logger = logging.getLogger("hermes.agent_executor")
 
 # Base workspace directory for safe executions
 DEFAULT_WORKSPACE = Path("/data") if Path("/data").exists() else Path("/tmp")
@@ -465,7 +468,6 @@ def build_system_prompt_with_skills(chat_id: str) -> str:
 def _extract_tool_calls_from_text(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     """Fallback extractor for tool calls emitted inside text/XML blocks."""
     calls = []
-    # Match <tool_call name="tool_name">{"arg": "val"}</tool_call>
     for match in re.finditer(r'<tool_call\s+name=["\']([^"\']+)["\']>([\s\S]*?)</tool_call>', text, re.IGNORECASE):
         tname = match.group(1).strip()
         raw_args = match.group(2).strip()
@@ -484,8 +486,9 @@ async def run_autonomous_agent(
     msg_id: str,
     queue: asyncio.Queue
 ) -> str:
-    """Multi-turn autonomous execution loop with function calling and tool execution."""
+    """Multi-turn autonomous execution loop with function calling, collapsible thinking blocks, and clean final response."""
     full_text = ""
+    thinking_active = False
     text_active = False
 
     # Check for direct slash commands
@@ -517,10 +520,10 @@ async def run_autonomous_agent(
         openai_messages.append({"role": "user", "content": prompt or "Hello"})
 
     max_turns = 10
-    block_index = 0
+    thinking_block_idx = 0
+    text_block_idx = 1
 
     for turn in range(max_turns):
-        # On first turn or when tools are available, pass tool definitions
         payload = {
             "model": model or "auto/smart",
             "messages": openai_messages,
@@ -531,7 +534,7 @@ async def run_autonomous_agent(
 
         turn_text = ""
         tool_calls = []
-        stream_success = False
+        turn_reasoning = ""
 
         # Stream upstream tokens live
         try:
@@ -547,17 +550,22 @@ async def run_autonomous_agent(
                     continue
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {}) or {}
+                
+                # Check for model native reasoning
+                reasoning_chunk = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning_chunk:
+                    if not thinking_active:
+                        await queue.put(ab.create_thinking_block_start(thinking_block_idx))
+                        thinking_active = True
+                    await queue.put(ab.create_thinking_block_delta(reasoning_chunk, thinking_block_idx))
+                    turn_reasoning += reasoning_chunk
+
                 text_delta = delta.get("content", "")
                 if not text_delta:
                     text_delta = chunk.get("choices", [{}])[0].get("message", {}).get("content", "") or ""
 
                 if text_delta:
-                    if not text_active:
-                        await queue.put(ab.create_content_block_start(block_index))
-                        text_active = True
-                    await queue.put(ab.create_content_block_delta(text_delta, block_index))
                     turn_text += text_delta
-                    full_text += text_delta
 
                 # Accumulate native tool calls from delta chunks
                 tc_chunk = delta.get("tool_calls")
@@ -575,11 +583,7 @@ async def run_autonomous_agent(
                             tool_calls[tc_idx]["function"]["arguments"] += fn["arguments"]
 
                 finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
-                if finish_reason in ("stop", "end_turn", "length"):
-                    stream_success = True
-                    break
-                elif finish_reason == "tool_calls":
-                    stream_success = True
+                if finish_reason in ("stop", "end_turn", "length", "tool_calls"):
                     break
         except Exception as se:
             logger.warning(f"Turn {turn} stream error: {se}")
@@ -597,61 +601,87 @@ async def run_autonomous_agent(
         if turn_text.strip():
             openai_messages.append({"role": "assistant", "content": turn_text})
 
-        # If no tool calls were made in this turn, the assistant has completed its answer!
-        if not tool_calls:
+        # CASE 1: Tools are being executed in this turn -> Stream to THINKING block
+        if tool_calls:
+            if not thinking_active:
+                await queue.put(ab.create_thinking_block_start(thinking_block_idx))
+                thinking_active = True
+
+            # If the model had some intermediate thought text before tool calls, route to thinking
+            if turn_text.strip():
+                clean_thought = turn_text.strip() + "\n"
+                await queue.put(ab.create_thinking_block_delta(clean_thought, thinking_block_idx))
+
+            # Execute all tool calls and stream execution logs into THINKING block
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                fn_name = fn.get("name", "")
+                raw_args = fn.get("arguments", "{}")
+                try:
+                    fn_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except Exception:
+                    fn_args = {}
+
+                tool_thought = f"\n*Executing `{fn_name}`"
+                if "command" in fn_args:
+                    tool_thought += f": {fn_args['command']}"
+                elif "name" in fn_args:
+                    tool_thought += f": {fn_args['name']}"
+                elif "path" in fn_args:
+                    tool_thought += f": {fn_args['path']}"
+                elif "skill_name" in fn_args:
+                    tool_thought += f": {fn_args['skill_name']}"
+                elif "task_id" in fn_args:
+                    tool_thought += f": {fn_args['task_id']}"
+                tool_thought += "*\n"
+
+                await queue.put(ab.create_thinking_block_delta(tool_thought, thinking_block_idx))
+
+                # Execute tool safely
+                tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
+
+                # Emit tool stdout preview inside thinking block
+                if tool_result:
+                    out_preview = f"```\n{tool_result[:1000]}\n```\n"
+                    await queue.put(ab.create_thinking_block_delta(out_preview, thinking_block_idx))
+
+                # Inject tool result in standard user role format for subsequent reasoning turns
+                openai_messages.append({
+                    "role": "user",
+                    "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete final response to the user."
+                })
+
+        # CASE 2: No more tools called -> This is the FINAL USER-FACING RESPONSE!
+        else:
+            # Close thinking block if it was active
+            if thinking_active:
+                await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
+                thinking_active = False
+
+            # Stream clean final user-facing text
+            if not text_active:
+                await queue.put(ab.create_content_block_start(text_block_idx))
+                text_active = True
+
+            if turn_text:
+                # Remove any stray artifact/thinking tags if model wrapped them
+                clean_final = turn_text
+                await queue.put(ab.create_content_block_delta(clean_final, text_block_idx))
+                full_text += clean_final
             break
 
-        # Execute all tool calls
-        for tc in tool_calls:
-            fn = tc.get("function", {})
-            fn_name = fn.get("name", "")
-            raw_args = fn.get("arguments", "{}")
-            try:
-                fn_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            except Exception:
-                fn_args = {}
-
-            tool_msg = f"\n\n*Executing `{fn_name}`*"
-            if "command" in fn_args:
-                tool_msg += f": `{fn_args['command']}`"
-            elif "name" in fn_args:
-                tool_msg += f": `{fn_args['name']}`"
-            elif "path" in fn_args:
-                tool_msg += f": `{fn_args['path']}`"
-            elif "skill_name" in fn_args:
-                tool_msg += f": `{fn_args['skill_name']}`"
-            elif "task_id" in fn_args:
-                tool_msg += f": `{fn_args['task_id']}`"
-            tool_msg += "...\n"
-
-            if not text_active:
-                await queue.put(ab.create_content_block_start(block_index))
-                text_active = True
-            await queue.put(ab.create_content_block_delta(tool_msg, block_index))
-            full_text += tool_msg
-
-            # Execute tool safely
-            tool_result = await execute_tool_call(fn_name, fn_args, chat_id)
-
-            # Emit tool output preview if meaningful
-            if fn_name in ("bash", "read_file", "list_dir") and tool_result:
-                preview_text = f"\n```text\n{tool_result[:1500]}\n```\n\n"
-                await queue.put(ab.create_content_block_delta(preview_text, block_index))
-                full_text += preview_text
-
-            # Inject tool result in standard user role format supported by ALL upstream models
-            openai_messages.append({
-                "role": "user",
-                "content": f"[Tool Result for '{fn_name}']:\n{tool_result}\n\nPlease analyze this result and proceed to provide the complete response to the user."
-            })
+    # Clean up stream blocks
+    if thinking_active:
+        await queue.put(ab.create_thinking_block_stop(thinking_block_idx))
 
     if text_active:
-        await queue.put(ab.create_content_block_stop(block_index))
+        await queue.put(ab.create_content_block_stop(text_block_idx))
     elif not full_text:
-        reply = "I've processed your request."
-        await queue.put(ab.create_content_block_start(0))
-        await queue.put(ab.create_content_block_delta(reply, 0))
-        await queue.put(ab.create_content_block_stop(0))
+        # Fallback if no final text was emitted
+        reply = "I've completed your request."
+        await queue.put(ab.create_content_block_start(text_block_idx))
+        await queue.put(ab.create_content_block_delta(reply, text_block_idx))
+        await queue.put(ab.create_content_block_stop(text_block_idx))
         full_text = reply
 
     await queue.put(ab.create_message_delta("end_turn"))
