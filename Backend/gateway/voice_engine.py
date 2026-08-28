@@ -100,3 +100,59 @@ async def synthesize_speech_bytes(
 def get_curated_voices() -> List[Dict[str, Any]]:
     """Return list of supported high-quality neural voices."""
     return CURATED_VOICES
+
+async def synthesize_speech_pcm_stream(
+    text: str,
+    voice: str = "en-US-ChristopherNeural",
+    rate: str = "+0%",
+    pitch: str = "+0Hz"
+) -> AsyncGenerator[bytes, None]:
+    '''Synthesize speech and transcode MP3 stream to raw PCM 16000Hz 16-bit mono bytes for Android AudioTrack.'''
+    clean_text = text.strip()
+    if not clean_text:
+        return
+
+    clean_text = re.sub(r'```[\s\S]*?```', ' (code omitted) ', clean_text)
+    clean_text = re.sub(r'`([^`]+)`', r'\1', clean_text)
+    clean_text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', clean_text)
+    clean_text = re.sub(r'[#*_~>]+', '', clean_text)
+    clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
+
+    if not clean_text:
+        clean_text = "I've completed the operation."
+
+    try:
+        import edge_tts
+        mp3_bytes = io.BytesIO()
+        communicate = edge_tts.Communicate(clean_text, voice, rate=rate, pitch=pitch)
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                mp3_bytes.write(chunk["data"])
+
+        raw_mp3 = mp3_bytes.getvalue()
+        if not raw_mp3:
+            return
+
+        # Convert MP3 to raw PCM 16kHz s16le mono using ffmpeg
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-f", "s16le",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout_data, stderr_data = await proc.communicate(input=raw_mp3)
+        if stdout_data:
+            chunk_size = 4096
+            for i in range(0, len(stdout_data), chunk_size):
+                yield stdout_data[i:i+chunk_size]
+        else:
+            # Fallback if ffmpeg missing
+            yield raw_mp3
+    except Exception as e:
+        logger.error(f"PCM synthesis error: {e}")

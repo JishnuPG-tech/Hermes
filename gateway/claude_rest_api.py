@@ -58,26 +58,48 @@ def _format_msg(sender: str, text: str, idx: int, prev_uuid: Optional[str] = Non
         "stop_reason": "end_turn" if sender == "assistant" else None
     }
 
-async def _generate_ai_title_async(chat_id: str, first_prompt: str):
-    """Generate a clean, professional 3-6 word AI title using fast LLM inference."""
-    if not first_prompt or len(first_prompt.strip()) < 2:
+async def _generate_ai_title_async(chat_id: str, first_prompt: Any):
+    """Generate a clean, professional 3-6 word AI title using smart extraction & LLM inference."""
+    clean_p = ""
+    if isinstance(first_prompt, str):
+        clean_p = first_prompt.strip()
+    elif isinstance(first_prompt, list):
+        clean_p = " ".join(str(p.get("text", "") or p.get("content", "")) for p in first_prompt if isinstance(p, dict)).strip()
+    elif isinstance(first_prompt, dict):
+        clean_p = str(first_prompt.get("text") or first_prompt.get("content") or "").strip()
+
+    if not clean_p and chat_id in _CONVERSATIONS:
+        msgs = _CONVERSATIONS[chat_id].get("chat_messages", [])
+        for m in msgs:
+            if m.get("sender") == "human":
+                clean_p = str(m.get("text") or "").strip()
+                if clean_p:
+                    break
+
+    if not clean_p or len(clean_p) < 2:
         return
+
+    # 1. Immediately apply heuristic title so the history updates without waiting
+    clean_title = _clean_title(clean_p)
+    if chat_id in _CONVERSATIONS:
+        _CONVERSATIONS[chat_id]["name"] = clean_title
+        _CONVERSATIONS[chat_id]["summary"] = clean_title
+        _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _save_history()
+
+    # 2. Refine asynchronously using LLM with ample token allowance
     try:
         payload = {
-            "model": "auto/best-fast",
+            "model": "auto/smart",
             "messages": [
                 {
-                    "role": "system",
-                    "content": "You are a professional title generator. Generate a concise, clear 3 to 6 word title summarizing the user prompt. Return ONLY the title text with no quotes, no markdown, and no punctuation."
-                },
-                {
                     "role": "user",
-                    "content": first_prompt[:400]
+                    "content": f"Generate a concise 3-5 word title for the following query. Respond with ONLY the title itself, no markdown, no quotes:\n\n{clean_p[:400]}"
                 }
             ],
-            "max_tokens": 16
+            "max_tokens": 120
         }
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
                 "http://127.0.0.1:20128/v1/chat/completions",
                 headers={"Authorization": f"Bearer {ab.UPSTREAM_KEY}", "Content-Type": "application/json"},
@@ -85,7 +107,10 @@ async def _generate_ai_title_async(chat_id: str, first_prompt: str):
             )
             if resp.status_code == 200:
                 data = resp.json()
-                t = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                msg_obj = data.get("choices", [{}])[0].get("message", {})
+                t = msg_obj.get("content") or msg_obj.get("reasoning_content") or ""
+                t = t.strip()
+                # Clean title
                 t = "".join(c for c in t if c not in ('"', "'", "`", "#", "*", ":", "\n", "\r")).strip()
                 if t and len(t) >= 3 and len(t) <= 60:
                     if chat_id in _CONVERSATIONS:
@@ -94,15 +119,8 @@ async def _generate_ai_title_async(chat_id: str, first_prompt: str):
                         _CONVERSATIONS[chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                         _save_history()
                         logger.info(f"AI Title generated for {chat_id}: '{t}'")
-                        return
     except Exception as e:
         logger.warning(f"AI title generation fallback: {e}")
-
-    if chat_id in _CONVERSATIONS:
-        clean = _clean_title(first_prompt)
-        _CONVERSATIONS[chat_id]["name"] = clean
-        _CONVERSATIONS[chat_id]["summary"] = clean
-        _save_history()
 
 def _extract_artifacts_from_conv(chat_id: str) -> List[Dict[str, Any]]:
     conv = _CONVERSATIONS.get(chat_id, {})
@@ -3409,8 +3427,8 @@ async def tts_websocket_stream(websocket: WebSocket):
 
             text_chunk = msg.get("text", "")
             if text_chunk:
-                # Stream neural audio chunks back to Android AudioTrack
-                async for audio_chunk in ve.synthesize_speech_stream(text_chunk, voice=voice):
+                # Stream raw PCM 16kHz audio chunks back to Android AudioTrack
+                async for audio_chunk in ve.synthesize_speech_pcm_stream(text_chunk, voice=voice):
                     if audio_chunk:
                         await websocket.send_bytes(audio_chunk)
     except WebSocketDisconnect:

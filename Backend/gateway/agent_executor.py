@@ -416,7 +416,7 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
 
 def build_system_prompt_with_skills(chat_id: str) -> str:
     base_prompt = (
-        "You are Claude, a helpful, thoughtful, and capable AI assistant created by Anthropic, running with autonomous server tool execution and dynamic skills capabilities.\n\n"
+        "You are Hermes Agent, a powerful, fully autonomous open-source agentic AI assistant created by Nous Research and the open-source community, running with autonomous server tool execution and dynamic skills capabilities.\n\n"
         "# Voice, Tone & Formatting Guidelines (Claude Style):\n"
         "- Tone: Write in Claude's authentic voice—thoughtful, direct, articulate, insightful, and concise.\n"
         "- Clean Typography: DO NOT use excessive or decorative generic emojis (e.g. 🚀, 🛠️, ⚡, 📁, 📄, 💡, 🧠, 🎉, 🔍). Keep your formatting clean, modern, and professional.\n"
@@ -499,8 +499,8 @@ async def run_autonomous_agent(
         await queue.put(ab.create_message_stop())
         return res, ""
 
-    # Emit initial live status label next to Claude loading spinner
-    await queue.put(ab.create_thinking_summary_start("Thinking...", index=0))
+    # Emit initial ThinkingBlock with dynamic ThinkingSummary
+    await queue.put(ab.create_thinking_block_start("Thinking...", index=0))
     await queue.put(ab.create_thinking_summary_delta("Thinking...", index=0))
     summary_active = True
 
