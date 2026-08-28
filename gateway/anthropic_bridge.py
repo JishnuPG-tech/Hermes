@@ -21,11 +21,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter(tags=["AnthropicBridge"])
 
-# Upstream = Internal Hermes Agent API server (runs on port 8642 inside container)
-# The Hermes Agent internally calls OmniRoute for LLM inference
+# Upstream = Internal OmniRoute (port 20128) for high-speed, direct OpenAI streaming
+# Fallback = Internal Hermes Agent API server (port 8642)
 UPSTREAM_URL = os.getenv(
     "ANTHROPIC_BRIDGE_UPSTREAM_URL",
-    "http://127.0.0.1:8642/v1/chat/completions"
+    "http://127.0.0.1:20128/v1/chat/completions"
 )
 
 UPSTREAM_KEY = os.getenv(
@@ -180,6 +180,7 @@ def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optiona
 
 FALLBACK_URLS = [
     UPSTREAM_URL,
+    "http://127.0.0.1:20128/v1/chat/completions",
     "http://127.0.0.1:8642/v1/chat/completions",
 ]
 
