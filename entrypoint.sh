@@ -5,17 +5,17 @@ log_info() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [INFO] [HERMES] $1"; }
 log_error() { echo "$(date -u '+%Y-%m-%d %H:%M:%S') [ERROR] [HERMES] $1"; }
 
 # ── Config ──────────────────────────────────────────────────────
-OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-https://jishnupg-opencode-cli.hf.space/v1}"
+OMNIROUTE_BASE_URL="${OMNIROUTE_BASE_URL:-http://127.0.0.1:20128/v1}"
 OMNIROUTE_API_KEY="${OMNIROUTE_API_KEY:-sk-2e556e0437ee2958-7baf2d-b4133935}"
-HERMES_MODEL="${HERMES_MODEL:-antigravity/gemini-3.5-flash-low}"
+HERMES_MODEL="${HERMES_MODEL:-auto/smart}"
 HERMES_INTERNAL_PORT="${HERMES_INTERNAL_PORT:-8642}"
 PUBLIC_PORT="${PUBLIC_PORT:-7860}"
 API_SERVER_KEY="${API_SERVER_KEY:-${OMNIROUTE_API_KEY}}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 OMNIROUTE_ACTIVE="/root/.omniroute"
 OMNIROUTE_DATA="/data/omniroute"
-# Skip internal OmniRoute (use external) - saves resources and avoids rate limits
-SKIP_INTERNAL_OMNIROUTE="${SKIP_INTERNAL_OMNIROUTE:-true}"
+# Enable internal OmniRoute for instant response and zero external proxy dependency
+SKIP_INTERNAL_OMNIROUTE="${SKIP_INTERNAL_OMNIROUTE:-false}"
 
 export OMNIROUTE_BASE_URL OMNIROUTE_API_KEY API_SERVER_KEY HERMES_INTERNAL_PORT
 
@@ -253,11 +253,6 @@ if [ -d "/ignis" ]; then
     done
 fi
 
-# ── Start Nginx :7860 (public edge with compression) ────────────
-log_info "Starting Nginx on port ${PUBLIC_PORT} (gzip compression)"
-nginx -g 'daemon off;' -c /nginx.conf &
-NGINX_PID=$!
-
 # ── Start FastAPI Gateway :8000 ─────────────────────────────────
 log_info "Starting FastAPI Gateway on 127.0.0.1:8000"
 python3 -m uvicorn gateway.main:app \
@@ -265,6 +260,21 @@ python3 -m uvicorn gateway.main:app \
     --port 8000 \
     --workers 1 2>&1 | tee /data/cache/gateway.log &
 FASTAPI_PID=$!
+
+i=0
+while [ $i -lt 30 ]; do
+    if curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
+        log_info "FastAPI Gateway healthy after ${i}s"
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+# ── Start Nginx :7860 (public edge with compression) ────────────
+log_info "Starting Nginx on port ${PUBLIC_PORT} (gzip compression)"
+nginx -g 'daemon off;' -c /nginx.conf &
+NGINX_PID=$!
 
 # ── Graceful Shutdown Trap ──────────────────────────────────────
 cleanup() {
@@ -296,26 +306,30 @@ log_info "All services dispatched. Supervisor active."
 while true; do
     sleep 10
 
-    # Nginx: check if port 7860 responds
-    if ! curl -fsS "http://127.0.0.1:7860/" >/dev/null 2>&1; then
-        log_error "Nginx down, restarting..."
-        nginx -g 'daemon off;' -c /nginx.conf &
-        NGINX_PID=$!
-        sleep 2
-    fi
-
     # FastAPI: check if port 8000 responds
     if ! curl -fsS "http://127.0.0.1:8000/" >/dev/null 2>&1; then
         log_error "FastAPI down, restarting..."
-        python3 -m uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --workers 1 &
+        kill $FASTAPI_PID 2>/dev/null || true
+        python3 -m uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --workers 1 2>&1 | tee -a /data/cache/gateway.log &
         FASTAPI_PID=$!
         sleep 2
+    fi
+
+    # Nginx: check if port 7860 responds
+    if ! curl -fsS "http://127.0.0.1:7860/" >/dev/null 2>&1; then
+        if ! pgrep -x "nginx" >/dev/null 2>&1; then
+            log_error "Nginx down, restarting..."
+            nginx -g 'daemon off;' -c /nginx.conf &
+            NGINX_PID=$!
+            sleep 2
+        fi
     fi
 
     # Hermes: check if port 8642 responds
     if ! curl -fsS "http://127.0.0.1:8642/health" >/dev/null 2>&1; then
         log_error "Hermes down, restarting..."
-        hermes gateway run 2>&1 | tee /data/cache/hermes.log &
+        kill $HERMES_PID 2>/dev/null || true
+        hermes gateway run 2>&1 | tee -a /data/cache/hermes.log &
         HERMES_PID=$!
         sleep 2
     fi
@@ -324,6 +338,7 @@ while true; do
     if [ "$SKIP_INTERNAL_OMNIROUTE" != "true" ]; then
         if ! curl -fsS "http://127.0.0.1:20128/api/monitoring/health" >/dev/null 2>&1; then
             log_error "OmniRoute down, restarting..."
+            kill $OMNIROUTE_PID 2>/dev/null || true
             cd /omniroute && node server.js > /data/cache/omniroute.log 2>&1 &
             OMNIROUTE_PID=$!
             sleep 2
