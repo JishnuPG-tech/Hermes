@@ -1399,9 +1399,20 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
         if fcontent:
             file_context_blocks.append(f"[Attached File: {fname}]\n{fcontent}")
 
-    full_prompt = prompt
-    if file_context_blocks:
-        full_prompt += "\n\n" + "\n\n".join(file_context_blocks)
+        if not prompt.strip() and file_context_blocks:
+        full_prompt = "
+
+".join(file_context_blocks) + "
+
+Please analyze the attached file(s) and provide a helpful response."
+    elif file_context_blocks:
+        full_prompt = (prompt + "
+
+" + "
+
+".join(file_context_blocks)).strip()
+    else:
+        full_prompt = prompt if prompt.strip() else "Hello"
 
     # Save user message immediately
     if chat_id not in _CONVERSATIONS:
@@ -1436,8 +1447,8 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
             for cb in content_blocks:
                 if isinstance(cb, dict) and cb.get("type") == "text":
                     msg_text = cb.get("text", "")
-        if msg_text:
-            formatted.append({"role": role, "content": msg_text})
+        if msg_text or role == "user":
+            formatted.append({"role": role, "content": msg_text or full_prompt})
     
     messages = formatted if formatted else [{"role": "user", "content": full_prompt}]
     if messages and messages[-1].get("role") == "user":
@@ -2150,6 +2161,64 @@ async def get_sandbox_frame(request: Request, frame_id: Optional[str] = None, ar
         "Expires": "0"
     }
     return HTMLResponse(content=rendered_html, headers=headers)
+
+# ----------------------------------------------------------------------------
+# 8b. Document & Attachment Conversion Endpoint (/convert_document)
+# ----------------------------------------------------------------------------
+@router.post("/api/organizations/{org_id}/convert_document")
+@router.post("/organizations/{org_id}/convert_document")
+@router.post("/hermes/api/organizations/{org_id}/convert_document")
+async def convert_document(org_id: str, request: Request):
+    """Handle document/image conversion from Claude Android client (multipart or JSON)."""
+    import base64
+    file_id = f"file_{uuid.uuid4().hex[:16]}"
+    file_name = "attachment.txt"
+    file_type = "text/plain"
+    extracted_text = ""
+    file_size = 0
+
+    content_type = request.headers.get("content-type", "")
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            uploaded_file = form.get("file") or form.get("document")
+            if uploaded_file and hasattr(uploaded_file, "filename"):
+                file_name = uploaded_file.filename or "attachment"
+                file_type = uploaded_file.content_type or "application/octet-stream"
+                raw_bytes = await uploaded_file.read()
+                file_size = len(raw_bytes)
+                
+                # If text-based or code
+                if any(file_type.startswith(p) for p in ["text/", "application/json", "application/javascript", "application/xml", "application/x-yaml"]):
+                    extracted_text = raw_bytes.decode("utf-8", errors="replace")
+                elif "image" in file_type:
+                    b64 = base64.b64encode(raw_bytes).decode("utf-8")
+                    extracted_text = f"[Image: {file_name} ({file_type}) base64 data length: {len(b64)}]"
+                elif "pdf" in file_type:
+                    # PDF fallback or text extraction
+                    extracted_text = f"[PDF Document: {file_name} ({file_size} bytes)]"
+                else:
+                    extracted_text = f"[File: {file_name} ({file_type}, {file_size} bytes)]"
+        else:
+            body = await request.json()
+            file_name = body.get("file_name") or body.get("name") or "attachment.txt"
+            file_type = body.get("file_type") or body.get("content_type") or "text/plain"
+            raw_content = body.get("content") or body.get("extracted_content") or ""
+            file_size = len(str(raw_content).encode("utf-8"))
+            extracted_text = str(raw_content)
+    except Exception as ex:
+        logger.warning(f"Error parsing convert_document: {ex}")
+        extracted_text = f"[Uploaded File: {file_name}]"
+
+    attachment_record = {
+        "id": file_id,
+        "file_name": file_name,
+        "file_size": file_size,
+        "file_type": file_type,
+        "extracted_content": extracted_text
+    }
+    _UPLOADED_FILES[file_id] = attachment_record
+    return attachment_record
 
 @router.post("/api/organizations/{org_id}/chat_conversations/{chat_id}/files")
 @router.post("/organizations/{org_id}/chat_conversations/{chat_id}/files")
