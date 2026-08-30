@@ -1399,18 +1399,11 @@ async def conversation_completion(org_id: str, chat_id: str, request: Request):
         if fcontent:
             file_context_blocks.append(f"[Attached File: {fname}]\n{fcontent}")
 
-        if not prompt.strip() and file_context_blocks:
-        full_prompt = "
-
-".join(file_context_blocks) + "
-
-Please analyze the attached file(s) and provide a helpful response."
+    full_prompt = prompt
+    if not prompt.strip() and file_context_blocks:
+        full_prompt = "\n\n".join(file_context_blocks) + "\n\nPlease analyze the attached file(s) and provide a helpful response."
     elif file_context_blocks:
-        full_prompt = (prompt + "
-
-" + "
-
-".join(file_context_blocks)).strip()
+        full_prompt = (prompt + "\n\n" + "\n\n".join(file_context_blocks)).strip()
     else:
         full_prompt = prompt if prompt.strip() else "Hello"
 
