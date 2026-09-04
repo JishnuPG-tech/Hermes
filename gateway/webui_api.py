@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, UploadFile
@@ -1248,7 +1248,9 @@ def _model_rows() -> List[Dict[str, Any]]:
 
 def _provider_rows() -> List[Dict[str, Any]]:
     base = os.getenv("OMNIROUTE_BASE_URL", os.getenv("UPSTREAM_OMNIROUTE_URL", ""))
-    return [{"id": "omniroute", "name": "OmniRoute", "display_name": "OmniRoute", "configured": bool(base), "has_key": bool(os.getenv("OMNIROUTE_API_KEY") or os.getenv("UPSTREAM_API_KEY")), "configurable": False, "is_self_hosted": False, "base_url": base, "models": [{"id": item, "label": item} for item in _model_ids()], "models_total": len(_model_ids())}]
+    parsed = urlsplit(base)
+    safe_base = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")) if parsed.scheme else ""
+    return [{"id": "omniroute", "name": "OmniRoute", "display_name": "OmniRoute", "configured": bool(base), "has_key": bool(os.getenv("OMNIROUTE_API_KEY") or os.getenv("UPSTREAM_API_KEY")), "configurable": False, "is_self_hosted": False, "base_url": safe_base, "models": [{"id": item, "label": item} for item in _model_ids()], "models_total": len(_model_ids())}]
 
 
 @router.get("/api/commands")
