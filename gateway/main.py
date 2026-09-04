@@ -11,6 +11,7 @@ from gateway.omniroute import router as omniroute_router
 from gateway.ignis import router as ignis_router
 from gateway.claude_rest_api import router as claude_rest_router
 from gateway.telemetry import router as telemetry_router
+from gateway.webui_api import router as webui_router
 
 app = FastAPI(
     title="Hermes Agent Space Gateway",
@@ -55,6 +56,8 @@ async def normalize_hermes_paths(request: Request, call_next):
 app.include_router(telemetry_router)
 app.include_router(anthropic_router)
 app.include_router(v1_sessions_router)  # v1 Sessions & Code API - MUST be before hermes_proxy catch-all
+# Additive Hermex/WebUI surface. Keep this before legacy /api/models aliases.
+app.include_router(webui_router)
 app.include_router(claude_rest_router)
 app.include_router(omniroute_router)
 app.include_router(ignis_router)
