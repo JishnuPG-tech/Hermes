@@ -37,6 +37,7 @@ class OfficialDashboardContractTests(unittest.TestCase):
         source = MAIN.read_text(encoding="utf-8")
         self.assertIn("HERMEX_ENABLE_HERMES_WEBUI", source)
         self.assertIn("HERMES_WEBUI_STATIC_ROOT", source)
+        self.assertIn('asset_path.startswith("static/")', source)
 
     def test_upstream_webui_snapshot_is_pinned_and_has_runtime_assets(self):
         metadata = (MIGRATION_UI / "UPSTREAM.md").read_text(encoding="utf-8")

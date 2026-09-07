@@ -292,6 +292,12 @@ async def hermes_webui_asset(asset_path: str):
         return _hermes_webui_disabled()
     root = _hermes_webui_root().resolve()
     candidate = (root / asset_path).resolve()
+    # The upstream index is served from its static/ directory, so its
+    # relative references remain static/style.css, static/boot.js, etc.
+    # Docker packages that directory's contents directly at the configured
+    # root. Resolve both layouts without weakening the path traversal guard.
+    if not candidate.is_file() and asset_path.startswith("static/"):
+        candidate = (root / asset_path[len("static/"):]).resolve()
     if candidate.is_file() and (candidate == root or root in candidate.parents):
         return FileResponse(candidate)
     index = root / "index.html"
