@@ -59,6 +59,7 @@ COPY Backend/gateway/anthropic_bridge.py /app/Backend/gateway/anthropic_bridge.p
 COPY Backend/gateway/claude_rest_api.py /app/Backend/gateway/claude_rest_api.py
 COPY hermes_core /app/hermes_core
 COPY ignis /app/ignis
+COPY third_party/hermes-webui/static /app/hermes-webui-static
 COPY --from=web-build /web/build/hermes-dashboard /app/web
 COPY health_doctor.py /app/health_doctor.py
 COPY nginx.conf /app/nginx.conf

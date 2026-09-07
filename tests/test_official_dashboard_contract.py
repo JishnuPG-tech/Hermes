@@ -7,6 +7,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "gateway" / "main.py"
 API = ROOT / "gateway" / "hermes_dashboard_api.py"
+MIGRATION_UI = ROOT / "third_party" / "hermes-webui"
 
 
 def route_literals(path: Path):
@@ -27,6 +28,21 @@ class OfficialDashboardContractTests(unittest.TestCase):
         self.assertIn("/dashboard", routes)
         self.assertIn("/dashboard/{asset_path:path}", routes)
         self.assertIn("/login", routes)
+
+    def test_upstream_webui_is_isolated_behind_migration_flag(self):
+        routes = route_literals(MAIN)
+        self.assertIn("/hermes-webui", routes)
+        self.assertIn("/hermes-webui/", routes)
+        self.assertIn("/hermes-webui/{asset_path:path}", routes)
+        source = MAIN.read_text(encoding="utf-8")
+        self.assertIn("HERMEX_ENABLE_HERMES_WEBUI", source)
+        self.assertIn("HERMES_WEBUI_STATIC_ROOT", source)
+
+    def test_upstream_webui_snapshot_is_pinned_and_has_runtime_assets(self):
+        metadata = (MIGRATION_UI / "UPSTREAM.md").read_text(encoding="utf-8")
+        self.assertIn("e168b67e4278df618d1cab61fdb3a8dc55b29a81", metadata)
+        for relative in ("index.html", "boot.js", "messages.js", "style.css"):
+            self.assertTrue((MIGRATION_UI / "static" / relative).is_file(), relative)
 
     def test_api_compatibility_routes_exist(self):
         routes = route_literals(API)

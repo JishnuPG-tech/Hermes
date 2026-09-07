@@ -24,6 +24,39 @@ app = FastAPI(
 )
 
 DASHBOARD_ROOT = Path(os.getenv("HERMES_DASHBOARD_ROOT", "/app/web"))
+HERMES_WEBUI_PREFIX = "/hermes-webui"
+
+
+def _hermes_webui_enabled() -> bool:
+    return os.getenv("HERMEX_ENABLE_HERMES_WEBUI", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _hermes_webui_root() -> Path:
+    configured = os.getenv("HERMES_WEBUI_STATIC_ROOT", "").strip()
+    candidates = [
+        Path(configured) if configured else None,
+        Path("/app/hermes-webui-static"),
+        Path(__file__).resolve().parents[1] / "third_party" / "hermes-webui" / "static",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_dir():
+            return candidate
+    return candidates[1]
+
+
+def _hermes_webui_disabled() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "Hermes WebUI migration route is disabled",
+            "enable_with": "HERMEX_ENABLE_HERMES_WEBUI=true",
+        },
+        status_code=404,
+    )
 
 def _dashboard_index_response(index: Path, request: Request | None) -> HTMLResponse:
     """Inject the dashboard's runtime base/auth settings without rebuilding it."""
@@ -58,6 +91,17 @@ async def normalize_hermes_paths(request: Request, call_next):
     path = request.scope.get("path", "")
     import re
     cleaned_path = re.sub(r"/+", "/", path)
+
+    # The upstream nesquena/hermes-webui assets are mounted under a temporary
+    # migration prefix, but their browser client still requests the normal
+    # root-relative /api and /health contracts. Rewrite only those requests;
+    # static assets and SPA paths remain under /hermes-webui/.
+    if cleaned_path == HERMES_WEBUI_PREFIX or cleaned_path.startswith(f"{HERMES_WEBUI_PREFIX}/"):
+        nested_path = cleaned_path[len(HERMES_WEBUI_PREFIX):] or "/"
+        if nested_path == "/health" or nested_path == "/health/":
+            cleaned_path = "/health"
+        elif nested_path == "/api" or nested_path.startswith("/api/"):
+            cleaned_path = nested_path
 
     # 2. If request starts with /hermes/api, /hermes/bootstrap, /hermes/account, /hermes/organizations
     # strip the leading /hermes prefix so it routes to the Claude REST API router
@@ -185,6 +229,82 @@ async def official_dashboard_asset(request: Request, asset_path: str):
         return _dashboard_index_response(index, request)
     return JSONResponse(
         {"error": "Official Hermes dashboard assets are not installed"},
+        status_code=503,
+    )
+
+
+@app.api_route("/hermes-webui", methods=["GET", "HEAD"])
+async def hermes_webui_root():
+    if not _hermes_webui_enabled():
+        return _hermes_webui_disabled()
+    return RedirectResponse(f"{HERMES_WEBUI_PREFIX}/", status_code=307)
+
+
+@app.api_route("/hermes-webui/", methods=["GET", "HEAD"])
+async def hermes_webui_index():
+    if not _hermes_webui_enabled():
+        return _hermes_webui_disabled()
+    index = _hermes_webui_root() / "index.html"
+    if not index.is_file():
+        return JSONResponse(
+            {"error": "Upstream Hermes WebUI assets are not installed"},
+            status_code=503,
+        )
+    html = index.read_text(encoding="utf-8").replace(
+        "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "hermex")
+    )
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.api_route("/hermes-webui/login", methods=["GET", "HEAD"])
+async def hermes_webui_login_page():
+    if not _hermes_webui_enabled():
+        return _hermes_webui_disabled()
+    if not os.getenv("HERMES_WEBUI_PASSWORD", "").strip():
+        return RedirectResponse(f"{HERMES_WEBUI_PREFIX}/", status_code=303)
+    script_open = "<scr" + "ipt>"
+    script_close = "</scr" + "ipt>"
+    return HTMLResponse(
+        """<!doctype html>
+<html><head><meta charset="utf-8"><title>Hermes WebUI login</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:16px system-ui;background:#0d1117;color:#f0f6fc;display:grid;place-items:center;min-height:100vh}
+form{display:grid;gap:14px;width:min(360px,90vw);padding:28px;border:1px solid #30363d;border-radius:12px}
+input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #484f58}button{cursor:pointer}</style>
+</head><body><form id="login">
+<h1>Hermes WebUI</h1><label>Password<input name="password" type="password" autofocus required></label>
+<button type="submit">Sign in</button><p id="error" role="alert"></p></form>
+__SCRIPT_OPEN__document.querySelector("#login").addEventListener("submit",async(e)=>{e.preventDefault();
+const password=new FormData(e.currentTarget).get("password");const r=await fetch("/api/auth/login",
+{method:"POST",headers:{"content-type":"application/json"},credentials:"include",body:JSON.stringify({password})});
+if(r.ok) location.assign("/hermes-webui/"); else document.querySelector("#error").textContent="Invalid password";});__SCRIPT_CLOSE__
+</body></html>""".replace("__SCRIPT_OPEN__", script_open).replace("__SCRIPT_CLOSE__", script_close),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@app.api_route("/hermes-webui/{asset_path:path}", methods=["GET", "HEAD"])
+async def hermes_webui_asset(asset_path: str):
+    if not _hermes_webui_enabled():
+        return _hermes_webui_disabled()
+    root = _hermes_webui_root().resolve()
+    candidate = (root / asset_path).resolve()
+    if candidate.is_file() and (candidate == root or root in candidate.parents):
+        return FileResponse(candidate)
+    index = root / "index.html"
+    if index.is_file():
+        html = index.read_text(encoding="utf-8").replace(
+            "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "hermex")
+        )
+        return HTMLResponse(
+            html,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+    return JSONResponse(
+        {"error": "Upstream Hermes WebUI assets are not installed"},
         status_code=503,
     )
 

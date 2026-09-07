@@ -50,3 +50,20 @@ full Hermes CLI runtime (cron, MCP management, plugin installation, provider
 OAuth, and messaging setup). Those endpoints return an explicit `501
 feature_not_supported` response in Hermex until a safe backend equivalent is
 available; they never return fake success responses.
+
+## Upstream Hermes WebUI migration route
+
+The separate [`nesquena/hermes-webui`](https://github.com/nesquena/hermes-webui)
+project is also vendored as an unmodified static snapshot under
+`third_party/hermes-webui/static`. It is available for compatibility work at
+`/hermes-webui/` only when:
+
+```text
+HERMEX_ENABLE_HERMES_WEBUI=true
+```
+
+The route rewrites that client's relative `/api/*` and `/health` requests to
+the existing root contracts. It does not start the upstream Python server and
+does not create a second session store or agent runtime. The pinned upstream
+commit, license, and migration status are recorded in
+`third_party/hermes-webui/UPSTREAM.md`.

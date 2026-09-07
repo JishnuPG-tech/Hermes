@@ -98,7 +98,10 @@ The production browser UI is the official upstream Hermes dashboard at
 `/dashboard/`, built from `official/web`. The compatibility/API layer and
 upstream pin are documented in `docs/OFFICIAL_HERMES_DASHBOARD.md`. The
 historical `artifacts/hermes-web` source is not copied, built, or served by
-the production image.
+the production image. The separate `nesquena/hermes-webui` client is preserved
+as an opt-in migration route at `/hermes-webui/` with
+`HERMEX_ENABLE_HERMES_WEBUI=true`; it uses the same `/api/*` adapter and is not
+enabled by default.
 
 The repository root (`Dockerfile`, `entrypoint.sh`, `nginx.conf`, and
 `gateway/`) is the Hugging Face deployment source of truth. `Backend/` is
