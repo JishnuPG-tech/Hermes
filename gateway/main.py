@@ -251,7 +251,7 @@ async def hermes_webui_index():
             status_code=503,
         )
     html = index.read_text(encoding="utf-8").replace(
-        "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "hermex")
+        "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "adapter-1")
     )
     return HTMLResponse(
         html,
@@ -303,7 +303,7 @@ async def hermes_webui_asset(asset_path: str):
     index = root / "index.html"
     if index.is_file():
         html = index.read_text(encoding="utf-8").replace(
-            "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "hermex")
+            "__WEBUI_VERSION__", os.getenv("HERMES_WEBUI_VERSION", "adapter-1")
         )
         return HTMLResponse(
             html,

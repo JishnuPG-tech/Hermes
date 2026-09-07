@@ -33,6 +33,8 @@ class WebUISecurityRegressionTests(unittest.TestCase):
 
     def test_browser_requests_have_origin_check(self):
         self.assertIn("HERMES_WEBUI_ALLOWED_ORIGINS", WEBUI)
+        self.assertIn("HERMES_WEBUI_PUBLIC_ORIGIN", WEBUI)
+        self.assertIn("PUBLIC_HOST", WEBUI)
         self.assertIn("Request origin is not allowed", WEBUI)
 
     def test_webui_router_is_registered_once_and_legacy_proxy_is_retained(self):

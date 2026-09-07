@@ -199,18 +199,45 @@ def _request_token(request: Request) -> Optional[str]:
     return None
 
 
+def _normalize_origin(value: str) -> str:
+    """Normalize an origin for comparison behind reverse proxies."""
+    value = value.strip().rstrip("/")
+    parsed = urlsplit(value)
+    if not parsed.scheme or not parsed.netloc:
+        return value.lower()
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port and not ((scheme == "https" and port == 443) or (scheme == "http" and port == 80)):
+        host = f"{host}:{port}"
+    return f"{scheme}://{host}"
+
+
 def _require_access(request: Request) -> str:
     origin = request.headers.get("origin")
     if origin:
         allowed = {
-            value.strip().rstrip("/")
+            _normalize_origin(value)
             for value in os.getenv("HERMES_WEBUI_ALLOWED_ORIGINS", "").split(",")
             if value.strip()
         }
         forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip()
         forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc)).split(",", 1)[0].strip()
         request_origin = f"{forwarded_proto}://{forwarded_host}"
-        if origin.rstrip("/") != request_origin.rstrip("/") and origin.rstrip("/") not in allowed:
+        # Hugging Face's edge proxy can leave the ASGI request with an
+        # internal forwarded host even though the browser is using the public
+        # Space domain. PUBLIC_HOST is already the gateway's canonical public
+        # host for upstream calls; accept that origin without disabling the
+        # allowlist or same-origin protection.
+        public_origin = os.getenv("HERMES_WEBUI_PUBLIC_ORIGIN", "").strip()
+        if not public_origin:
+            public_host = os.getenv("PUBLIC_HOST", "jishnupg-hermes.hf.space").strip()
+            public_origin = public_host if "://" in public_host else f"https://{public_host}"
+        allowed.add(_normalize_origin(public_origin))
+        if _normalize_origin(origin) != _normalize_origin(request_origin) and _normalize_origin(origin) not in allowed:
             raise HTTPException(status_code=403, detail="Request origin is not allowed")
     token = _request_token(request)
     if not _valid_session_token(token):
