@@ -14,7 +14,7 @@ export PYTHONPATH="/app:${PYTHONPATH}"
 
 # Step 2: Secret & Environment Verification
 if [ -z "$UPSTREAM_OMNIROUTE_URL" ]; then
-    export UPSTREAM_OMNIROUTE_URL="https://jishnupg-opencode-cli.hf.space/v1"
+    export UPSTREAM_OMNIROUTE_URL="http://127.0.0.1:8642/v1"
 fi
 echo "[BOOT] Upstream LLM Gateway: ${UPSTREAM_OMNIROUTE_URL}"
 

@@ -1,7 +1,7 @@
 """
 OmniRoute Router — proxies dashboard, API, and WebSocket to OmniRoute.
-Referer-aware: requests from /dashboard, /login, /omniroute → :20128 (dashboard)
-Everything else → :20128 (unified, Turbopack standalone build).
+Referer-aware: requests from /dashboard, /login, /omniroute → :8642 (dashboard)
+Everything else → :8642 (unified, Turbopack standalone build).
 Routes: /dashboard/*, /omniroute/*, /v1/*, /v1beta/*, /live-ws, /_next/*
 """
 import os
@@ -12,8 +12,8 @@ from gateway.utils import proxy_http_request, proxy_websocket_stream
 
 router = APIRouter(tags=["OmniRoute"])
 
-# OmniRoute Turbopack standalone: dashboard + API unified on :20128
-OMNIROUTE_PORT = int(os.getenv("OMNIROUTE_PORT", "20128"))
+# OmniRoute Turbopack standalone: dashboard + API unified on :8642
+OMNIROUTE_PORT = int(os.getenv("OMNIROUTE_PORT", "8642"))
 OMNIROUTE_WS_PORT = int(os.getenv("OMNIROUTE_WS_PORT", "20132"))
 OMNIROUTE_EMBED_PORT = int(os.getenv("OMNIROUTE_EMBED_PORT", "20131"))
 
