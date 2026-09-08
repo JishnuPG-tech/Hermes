@@ -72,7 +72,7 @@ def fixup_omniroute_html(html: str) -> str:
     return html
 
 
-OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
+OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "").rstrip("/")
 
 async def handle_omniroute_proxy(request: Request, path: str, html_fixup=None):
     """Dispatch to OmniRoute with Referer-aware routing."""
@@ -86,7 +86,7 @@ async def handle_omniroute_proxy(request: Request, path: str, html_fixup=None):
         or req_path in ("/v1", "/api/v1", "/v1beta")
     )
 
-    if is_api_call:
+    if is_api_call and OMNIROUTE_BASE_URL:
         subpath = req_path
         if subpath.startswith("/api/v1"):
             subpath = subpath[len("/api"):]
