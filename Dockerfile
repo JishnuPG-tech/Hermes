@@ -48,7 +48,8 @@ RUN pip install --no-cache-dir \
     pyjwt \
     cryptography \
     edge-tts \
-    huggingface_hub
+    huggingface_hub \
+    playwright
 
 # Copy application files
 COPY gateway /app/gateway
