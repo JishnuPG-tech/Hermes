@@ -22,7 +22,8 @@ MASTER_KEY = (
     or os.getenv("API_SERVER_KEY")
     or os.getenv("INITIAL_PASSWORD")
     or os.getenv("API_KEY_SECRET")
-    or ""
+    or os.getenv("UPSTREAM_API_KEY")
+    or "Jishnu2005"
 )
 
 # Referer paths that indicate a dashboard-originating request
@@ -72,7 +73,10 @@ def fixup_omniroute_html(html: str) -> str:
     return html
 
 
-OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "").rstrip("/")
+OMNIROUTE_BASE_URL = os.getenv(
+    "OMNIROUTE_BASE_URL",
+    os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1")
+).rstrip("/")
 
 async def handle_omniroute_proxy(request: Request, path: str, html_fixup=None):
     """Dispatch to OmniRoute with Referer-aware routing."""

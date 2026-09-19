@@ -47,7 +47,8 @@ RUN pip install --no-cache-dir \
     python-multipart \
     pyjwt \
     cryptography \
-    edge-tts
+    edge-tts \
+    huggingface_hub
 
 # Copy application files
 COPY gateway /app/gateway
@@ -62,6 +63,7 @@ COPY ignis /app/ignis
 COPY third_party/hermes-webui/static /app/hermes-webui-static
 COPY --from=web-build /web/build/hermes-dashboard /app/web
 COPY health_doctor.py /app/health_doctor.py
+COPY vault_sync.py /app/vault_sync.py
 COPY nginx.conf /app/nginx.conf
 COPY entrypoint.sh /app/entrypoint.sh
 COPY README.md /app/README.md

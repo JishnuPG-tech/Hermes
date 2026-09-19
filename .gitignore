@@ -5,3 +5,7 @@ artifacts/*/*.tsbuildinfo
 build/
 official/web/node_modules/
 official/apps/shared/node_modules/
+
+__pycache__/
+*.pyc
+

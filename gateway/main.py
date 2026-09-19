@@ -140,12 +140,14 @@ async def on_startup():
 # ── Root & Health ───────────────────────────────────────────────
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
+    upstream_omniroute = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
     return JSONResponse({
         "status": "ok",
         "service": "Hermes Agent Space",
+        "authority": "Hermes is the King. OmniRoute powers the king.",
         "components": {
             "hermes_agent": "http://127.0.0.1:8642",
-            "omniroute": "http://127.0.0.1:20128",
+            "omniroute": upstream_omniroute,
             "ignis_obsidian": "http://127.0.0.1:8080",
         },
         "endpoints": {
@@ -156,7 +158,8 @@ async def root():
             "dashboard": "/dashboard/",
             "obsidian": "/obsidian",
             "logs": "/logs",
-            "health": "/health/live",
+            "health": "/health",
+            "persistence": "/debug/persistence",
         },
     })
 
@@ -170,10 +173,12 @@ async def health_live():
 async def health_check():
     services = {}
     import httpx
-    client = httpx.AsyncClient(timeout=3.0)
+    client = httpx.AsyncClient(timeout=4.0)
+    upstream_omniroute = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
+    omniroute_health = f"{upstream_omniroute[:-3] if upstream_omniroute.endswith('/v1') else upstream_omniroute}/health"
     checks = {
         "hermes": "http://127.0.0.1:8642/health",
-        "omniroute": "http://127.0.0.1:20128/api/monitoring/health",
+        "omniroute": omniroute_health,
         "ignis": "http://127.0.0.1:8080/obsidian/health",
     }
     for name, url in checks.items():
@@ -183,10 +188,37 @@ async def health_check():
         except Exception as e:
             services[name] = {"status": "starting", "message": str(e)}
     await client.aclose()
-    # Hermex Android treats a 200 response as valid only when the decoded
-    # HealthResponse has status == "ok". Keep the existing diagnostics while
-    # exposing the compatibility field expected by the fixed client.
     return JSONResponse({"status": "ok", "gateway": "healthy", "upstreams": services})
+
+
+@app.get("/debug/persistence")
+async def debug_persistence():
+    data_dir = Path("/data")
+    memory_db = data_dir / "hermes" / "memory.sqlite"
+    conv_file = data_dir / "conversations" / "history.json"
+    vault_notes = list((data_dir / "obsidian" / "vault").glob("**/*.md")) if (data_dir / "obsidian" / "vault").exists() else []
+
+    return JSONResponse({
+        "status": "ok",
+        "memory_db_exists": memory_db.exists(),
+        "memory_db_size": memory_db.stat().st_size if memory_db.exists() else 0,
+        "conversations_exists": conv_file.exists(),
+        "conversations_size": conv_file.stat().st_size if conv_file.exists() else 0,
+        "obsidian_notes_count": len(vault_notes),
+        "cloud_vault_repo": os.getenv("HERMES_VAULT_REPO", "Jishnupg/hermes-storage-vault"),
+        "hf_token_set": bool(os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_API_KEY")),
+    })
+
+
+@app.post("/debug/vault/backup")
+@app.get("/debug/vault/backup")
+async def trigger_vault_backup():
+    try:
+        from vault_sync import backup_to_vault
+        ok, msg = backup_to_vault()
+        return JSONResponse({"status": "ok" if ok else "error", "message": msg})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 # ── PWA Manifest & Static Assets ───────────────────────────────

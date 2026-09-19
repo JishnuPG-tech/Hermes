@@ -9,8 +9,8 @@ from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 
 UPSTREAM_URL = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
-UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", ""))
-DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "auto/best-coding")
+UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", "Jishnu2005"))
+DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "antigravity/gemini-2.5-flash")
 
 HERMES_MASTER_SYSTEM_PROMPT = """You are Hermes Agent, a specialized autonomous AI coding and intelligence companion.
 
@@ -182,25 +182,28 @@ class HermesAgent:
             ]
         elif tier == "coding":
             tier_cascade = [
+                "antigravity/gemini-2.5-flash",
+                "groq/llama-3.3-70b-versatile",
                 "auto/best-coding",
                 "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "antigravity/gemini-2.5-flash",
                 "auto/best-reasoning",
                 "auto/best-chat",
                 "auto/fast"
             ]
         elif tier == "reasoning":
             tier_cascade = [
+                "antigravity/gemini-2.5-flash",
+                "groq/llama-3.3-70b-versatile",
                 "auto/best-reasoning",
                 "auto/best-coding",
                 "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "antigravity/gemini-2.5-flash",
                 "auto/best-chat",
                 "auto/fast"
             ]
         else:
             tier_cascade = [
                 "antigravity/gemini-2.5-flash",
+                "groq/llama-3.3-70b-versatile",
                 "auto/best-coding",
                 "nvidia/nvidia/nemotron-3-super-120b-a12b",
                 "auto/best-reasoning",

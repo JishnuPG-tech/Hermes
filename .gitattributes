@@ -1,3 +1,6 @@
 official/web/public/fonts/*.woff2 filter=lfs diff=lfs merge=lfs -text
 official/web/public/fonts-terminal/*.woff2 filter=lfs diff=lfs merge=lfs -text
 official/web/public/favicon.ico filter=lfs diff=lfs merge=lfs -text
+
+* text=auto eol=lf
+
