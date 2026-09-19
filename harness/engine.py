@@ -82,12 +82,23 @@ class HarnessEngine:
             risk_level=risk_level,
             allowed_tools=allowed_tools or ["bash_exec", "read_file", "write_file", "edit_file", "list_directory"],
         )
+        # Create TaskContract
+        from harness.kernel.models import TaskContract
+        contract = TaskContract(
+            task_id=task.task_id,
+            objective=objective,
+            scope=f"project:{project_id}",
+            risk_level=risk_level,
+            required_tools=task.allowed_tools,
+        )
+        task.metadata["task_contract"] = contract.to_dict()
+
         # Create dedicated workspace
         workspace = self.workspace_manager.create_workspace(task.task_id)
         task.workspace_path = str(workspace)
         self.db.save_task(task)
 
-        await self.event_bus.emit(task.task_id, "task.created", "harness", "success", {"objective": objective, "workspace": str(workspace)})
+        await self.event_bus.emit(task.task_id, "task.created", "harness", "success", {"objective": objective, "workspace": str(workspace), "contract_id": contract.contract_id})
 
         # 3. Transition to INTAKE -> CONTEXT_READY -> PLANNED
         transition_task(task, TaskStatus.INTAKE)

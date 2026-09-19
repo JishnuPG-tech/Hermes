@@ -17,6 +17,7 @@ TOOL_PERMISSION_MAP: Dict[str, PermissionLevel] = {
     "write_file": PermissionLevel.L2_PROJECT_EDIT,
     "edit_file": PermissionLevel.L2_PROJECT_EDIT,
     "append_file": PermissionLevel.L2_PROJECT_EDIT,
+    "bash": PermissionLevel.L3_TERMINAL_EXEC,
     "bash_exec": PermissionLevel.L3_TERMINAL_EXEC,
     "http_request": PermissionLevel.L4_NETWORK_API,
     "github_create_branch": PermissionLevel.L5_GITHUB_WRITE,
@@ -60,7 +61,7 @@ def classify_action(tool_name: str, arguments: Dict[str, Any]) -> tuple[Permissi
         risk_level = RiskLevel.MEDIUM
 
     # Deep inspection for bash commands
-    if tool_name == "bash_exec":
+    if tool_name in ("bash_exec", "bash"):
         cmd = arguments.get("command", "")
         for pattern in DESTRUCTIVE_PATTERNS:
             if pattern.search(cmd):

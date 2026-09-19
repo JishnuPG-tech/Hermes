@@ -241,11 +241,97 @@ AGENT_TOOLS = [
                 "required": ["task_id"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notion_search",
+            "description": "Search Notion workspaces for pages, databases, and structured project notes.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords or title to search in Notion."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notion_read_page",
+            "description": "Read the full structured contents and blocks of a specific Notion page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "page_id": {
+                        "type": "string",
+                        "description": "The Notion page ID or UUID."
+                    }
+                },
+                "required": ["page_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notion_create_page",
+            "description": "Create a new structured documentation or project note in Notion.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Page title"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown text content for the page"
+                    },
+                    "parent_id": {
+                        "type": "string",
+                        "description": "Optional parent Notion page or database ID"
+                    }
+                },
+                "required": ["title", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "knowledge_search",
+            "description": "Perform unified hybrid search across Notion and local memory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    },
+                    "sources": {
+                        "type": "string",
+                        "description": "Comma-separated sources, e.g. 'notion' or 'notion,obsidian'"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
     }
 ]
 
 async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> str:
     """Execute a tool call safely and return the result string."""
+    # Enforce strict pre-execution trust hierarchy policy
+    from harness.policy.trust_hierarchy import get_trust_engine
+    policy_eval = get_trust_engine().evaluate(tool_name=name, arguments=args, chat_id=chat_id)
+    if policy_eval.requires_approval:
+        return f"[POLICY BLOCKED] Action '{name}' requires owner approval. Reason: {policy_eval.reason}"
+
     try:
         if name == "bash":
             cmd = args.get("command", "")
@@ -408,6 +494,70 @@ async def execute_tool_call(name: str, args: Dict[str, Any], chat_id: str) -> st
             tid = args.get("task_id", "").strip()
             logs = bg.get_job_logs(tid)
             return f"**Logs for `{tid}`:**\n```text\n{logs[-2000:]}\n```"
+
+        elif name == "notion_search":
+            q = args.get("query", "").strip()
+            from harness.knowledge.router import KnowledgeRouter
+            from harness.knowledge.models import KnowledgeQuery
+            krouter = KnowledgeRouter()
+            results = await krouter.search(KnowledgeQuery(query=q, sources=["notion"], limit=8))
+            if not results:
+                return f"No Notion documents found matching query: '{q}'"
+            lines = [f"### Notion Search Results for '{q}' ({len(results)} found)\n"]
+            for r in results:
+                doc = r.document
+                lines.append(f"- **{doc.title}** (`{doc.id}`)")
+                if doc.content:
+                    snippet = doc.content.replace("\n", " ")[:160]
+                    lines.append(f"  {snippet}...")
+            return "\n".join(lines)
+
+        elif name == "notion_read_page":
+            pid = args.get("page_id", "").strip()
+            from harness.knowledge.notion_connector import NotionConnector
+            conn = NotionConnector()
+            doc = await conn.get(pid)
+            if not doc:
+                return f"Error: Could not retrieve Notion page '{pid}'."
+            from harness.security.prompt_isolation import wrap_untrusted_content
+            wrapped = wrap_untrusted_content(doc.content, source_type="notion", source_id=pid)
+            return f"### Notion Page: {doc.title}\n{wrapped}"
+
+        elif name == "notion_create_page":
+            title = args.get("title", "Untitled Note")
+            content = args.get("content", "")
+            parent_id = args.get("parent_id")
+            from harness.knowledge.notion_connector import NotionConnector
+            from harness.knowledge.models import WriteIntent
+            conn = NotionConnector()
+            intent = WriteIntent(
+                intent_id=f"w_{uuid.uuid4().hex[:8]}",
+                source="notion",
+                document_id=parent_id or "",
+                title=title,
+                content=content,
+            )
+            res = await conn.write(intent)
+            if res.success:
+                return f"Successfully created Notion page: **{title}** (URI: {res.created_uri})"
+            return f"Failed to create Notion page: {res.error}"
+
+        elif name == "knowledge_search":
+            q = args.get("query", "").strip()
+            srcs = [s.strip() for s in args.get("sources", "notion,obsidian").split(",") if s.strip()]
+            from harness.knowledge.router import KnowledgeRouter
+            from harness.knowledge.models import KnowledgeQuery
+            krouter = KnowledgeRouter()
+            results = await krouter.search(KnowledgeQuery(query=q, sources=srcs, limit=6))
+            if not results:
+                return f"No knowledge matches found for '{q}'."
+            lines = [f"### Unified Knowledge Results for '{q}'\n"]
+            for r in results:
+                doc = r.document
+                lines.append(f"- [{doc.source.upper()}] **{doc.title}** (`{doc.id}`) - Score: {round(r.score, 2)}")
+                if doc.content:
+                    lines.append(f"  {doc.content.replace(chr(10), ' ')[:140]}...")
+            return "\n".join(lines)
 
         else:
             return f"Error: Unknown tool '{name}'."

@@ -28,6 +28,7 @@ class TaskStatus(str, Enum):
     FAILED_FINAL = "FAILED_FINAL"
     CANCELLED = "CANCELLED"
     PAUSED = "PAUSED"
+    ARCHIVED = "ARCHIVED"
 
 
 class RiskLevel(str, Enum):
@@ -186,4 +187,27 @@ class ApprovalRequest:
         d["risk_level"] = self.risk_level.value
         d["permission_level"] = self.permission_level.value
         d["status"] = self.status.value
+        return d
+
+
+@dataclass
+class TaskContract:
+    contract_id: str = field(default_factory=lambda: f"tc_{uuid.uuid4().hex[:10]}")
+    task_id: str = ""
+    objective: str = ""
+    scope: str = "project"
+    authorization_level: PermissionLevel = PermissionLevel.L3_TERMINAL_EXEC
+    constraints: List[str] = field(default_factory=list)
+    required_tools: List[str] = field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.MEDIUM
+    dependencies: List[str] = field(default_factory=list)
+    success_conditions: List[str] = field(default_factory=list)
+    rollback_strategy: str = "git_checkout"
+    reporting_policy: str = "on_complete_or_failure"
+    created_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        d["authorization_level"] = self.authorization_level.value
+        d["risk_level"] = self.risk_level.value
         return d
