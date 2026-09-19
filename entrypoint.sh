@@ -25,9 +25,16 @@ fi
 if [ -z "$HERMES_VAULT_REPO" ]; then
     export HERMES_VAULT_REPO="Jishnupg/hermes-storage-vault"
 fi
+if [ -z "$KNOWLEDGE_ENABLED" ]; then
+    export KNOWLEDGE_ENABLED="true"
+fi
+if [ -z "$KNOWLEDGE_DEFAULT_SOURCE" ]; then
+    export KNOWLEDGE_DEFAULT_SOURCE="notion"
+fi
 
 echo "[BOOT] Upstream LLM Gateway: ${UPSTREAM_OMNIROUTE_URL}"
 echo "[BOOT] Default Hermes Model: ${HERMES_DEFAULT_MODEL}"
+echo "[BOOT] Primary Knowledge Engine: ${KNOWLEDGE_DEFAULT_SOURCE}"
 
 # Step 3: Zero-Loss Persistence Restore from Cloud Vault
 echo "[INIT] Checking Cloud Vault for persistent state restore..."
