@@ -28,6 +28,7 @@ VALID_TRANSITIONS: Dict[TaskStatus, Set[TaskStatus]] = {
         TaskStatus.WAITING_TOOL,
         TaskStatus.WAITING_EXTERNAL,
         TaskStatus.VERIFYING,
+        TaskStatus.COMPLETED,
         TaskStatus.FAILED_RECOVERABLE,
         TaskStatus.FAILED_FINAL,
         TaskStatus.PAUSED,

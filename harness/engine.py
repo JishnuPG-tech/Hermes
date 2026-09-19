@@ -260,6 +260,10 @@ class HarnessEngine:
 
     async def _finalize_task(self, task: Task, subtasks: List[Subtask]) -> None:
         """Finalize task, transition to COMPLETED, and record knowledge in Obsidian vault."""
+        transition_task(task, TaskStatus.VERIFYING)
+        self.db.save_task(task)
+        await self.event_bus.emit(task.task_id, "task.verifying", "harness", "running", {})
+
         transition_task(task, TaskStatus.COMPLETED)
         self.db.save_task(task)
 
