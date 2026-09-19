@@ -80,8 +80,14 @@ class ToolRegistry:
         ]):
             selected_categories.add("coding")
 
-        # Obsidian vault / notes intent
-        if any(w in p for w in ["note", "vault", "obsidian", "save note", "read note", "journal", "document", "knowledge"]):
+        # Knowledge & Notion / vault / notes intent
+        if any(w in p for w in [
+            "note", "vault", "obsidian", "notion", "knowledge", "save note", "read note",
+            "journal", "document", "decision", "decisions", "project", "projects", "task", "tasks",
+            "what do i know", "what did we decide", "architecture decision", "plan", "plans",
+            "status of", "what are we working on", "roadmap", "record", "documentation", "brief",
+            "my notes", "current work", "adr"
+        ]):
             selected_categories.add("vault")
 
         # Memory / recall intent
