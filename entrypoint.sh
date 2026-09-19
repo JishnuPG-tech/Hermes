@@ -5,8 +5,18 @@ echo "========================================================"
 echo "=== Hermes Agent + Knowledge Space Starting          ==="
 echo "========================================================"
 
-# Step 1: Directory Setup on Persistent /data Volume
+# Step 1: Directory Setup on Persistent /data Volume (Server Computer Layout)
 mkdir -p /data/hermes /data/conversations /data/obsidian/vault /data/backups /data/sessions /tmp/run
+mkdir -p /data/jarvis/projects /data/jarvis/workspaces /data/jarvis/databases /data/jarvis/artifacts /data/jarvis/logs /data/jarvis/agent-state
+
+export JARVIS_DATA_DIR="/data/jarvis"
+export HERMES_HOME="/data/jarvis/hermes"
+export JARVIS_PROJECTS_DIR="/data/jarvis/projects"
+export JARVIS_WORKSPACES_DIR="/data/jarvis/workspaces"
+export JARVIS_DB_DIR="/data/jarvis/databases"
+export JARVIS_ARTIFACTS_DIR="/data/jarvis/artifacts"
+export JARVIS_LOG_DIR="/data/jarvis/logs"
+export JARVIS_STATE_DIR="/data/jarvis/agent-state"
 
 export OBSIDIAN_VAULT_DIR="/data/obsidian/vault"
 export HERMES_MEMORY_DB="/data/hermes/memory.sqlite"

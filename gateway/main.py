@@ -17,6 +17,8 @@ from gateway.webui_api import router as webui_router
 from gateway.hermes_dashboard_api import router as dashboard_api_router
 from gateway.harness_api import router as harness_router
 from gateway.knowledge_api import router as knowledge_router
+from gateway.computer_api import router as computer_router
+
 
 
 app = FastAPI(
@@ -455,6 +457,7 @@ app.include_router(anthropic_router)
 app.include_router(v1_sessions_router)
 app.include_router(harness_router)
 app.include_router(knowledge_router)
+app.include_router(computer_router)
 app.include_router(webui_router)
 app.include_router(dashboard_api_router)
 app.include_router(claude_rest_router)
