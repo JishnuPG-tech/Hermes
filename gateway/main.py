@@ -15,6 +15,7 @@ from gateway.claude_rest_api import router as claude_rest_router
 from gateway.telemetry import router as telemetry_router
 from gateway.webui_api import router as webui_router
 from gateway.hermes_dashboard_api import router as dashboard_api_router
+from gateway.harness_api import router as harness_router
 
 app = FastAPI(
     title="Hermes Agent Space Gateway",
@@ -155,6 +156,9 @@ async def root():
             "anthropic_models": "/hermes/v1/models",
             "openai_chat": "/v1/chat/completions",
             "openai_models": "/v1/models",
+            "tasks": "/v1/tasks",
+            "approvals": "/v1/approvals",
+            "harness_health": "/v1/harness/health",
             "dashboard": "/dashboard/",
             "obsidian": "/obsidian",
             "logs": "/logs",
@@ -447,6 +451,7 @@ async def logs_service(service: str):
 app.include_router(telemetry_router)
 app.include_router(anthropic_router)
 app.include_router(v1_sessions_router)
+app.include_router(harness_router)
 app.include_router(webui_router)
 app.include_router(dashboard_api_router)
 app.include_router(claude_rest_router)
@@ -461,6 +466,16 @@ async def on_startup():
         await channels_manager.start_all_channels()
     except Exception as e:
         print(f"Error starting channels manager: {e}")
+
+    try:
+        from gateway.harness_api import get_harness_engine
+        from harness.watchdog import WatchdogDaemon
+        import asyncio
+        engine = get_harness_engine()
+        watchdog = WatchdogDaemon(engine)
+        asyncio.create_task(watchdog.start())
+    except Exception as e:
+        print(f"Error starting harness watchdog: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():

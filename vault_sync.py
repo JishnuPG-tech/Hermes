@@ -87,7 +87,7 @@ def backup_to_vault() -> tuple[bool, str]:
         staging_dir.mkdir(parents=True, exist_ok=True)
 
         # 1. Safely copy SQLite databases in read-only mode without WAL lock collisions
-        for db_rel in ["hermes/memory.sqlite", "hermes/state.db"]:
+        for db_rel in ["hermes/memory.sqlite", "hermes/state.db", "hermes/tasks.sqlite"]:
             src_db = DATA_DIR / db_rel
             if src_db.exists() and src_db.stat().st_size > 0:
                 dest_db = staging_dir / db_rel
@@ -103,8 +103,8 @@ def backup_to_vault() -> tuple[bool, str]:
                     logger.warning(f"Could not use SQLite backup API for {src_db}, falling back to copy: {e}")
                     shutil.copy2(src_db, dest_db)
 
-        # 2. Copy conversation history, obsidian notes, skills, webui data
-        for folder_rel in ["conversations", "obsidian/vault", "hermes/skills", "hermes/webui", "sessions"]:
+        # 2. Copy conversation history, obsidian notes, skills, webui data, task workspaces
+        for folder_rel in ["conversations", "obsidian/vault", "hermes/skills", "hermes/webui", "sessions", "hermes/workspaces"]:
             src_folder = DATA_DIR / folder_rel
             if src_folder.exists():
                 dest_folder = staging_dir / folder_rel
