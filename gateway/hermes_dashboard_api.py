@@ -508,10 +508,8 @@ async def dashboard_pty(websocket: WebSocket):
         return
 
 
-@router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@router.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 async def dashboard_unsupported(request: Request, path: str):
     """Advertise an honest boundary for upstream pages not backed by Hermex."""
-    if not path.startswith("api/"):
-        raise HTTPException(status_code=404, detail="Not found")
     _access(request)
-    return _unsupported("/" + path)
+    return _unsupported("/api/" + path)
