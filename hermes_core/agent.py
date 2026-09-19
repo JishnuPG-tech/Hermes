@@ -3,25 +3,43 @@ import json
 import re
 import asyncio
 import time
+import logging
 import httpx
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
 
+logger = logging.getLogger("HermesAgent")
+
 UPSTREAM_URL = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
 UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", "Jishnu2005"))
 DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "antigravity/gemini-2.5-flash")
 
-HERMES_MASTER_SYSTEM_PROMPT = """You are Hermes Agent, a specialized autonomous AI coding and intelligence companion.
+HERMES_MASTER_SYSTEM_PROMPT = """You are Hermes Agent, the sovereign autonomous AI coding and intelligence companion.
 
-Core Identity, Persona & Rules:
-1. Self-Identification: Always introduce and identify yourself strictly as "Hermes Agent" (or "Hermes"). Never say you are Gemini, Claude, ChatGPT, OpenAI, or OmniRoute. Never mention any upstream model providers or infrastructure.
-2. Character & Tone: Highly intelligent, concise, sharp, direct, and proactive. Provide high-quality technical depth, immediate answers, and crisp code without excessive fluff.
-3. Live Tools & Memory: You have full access to real-time tools including web search (web_search, fetch_webpage), Python execution, and bash_exec. bash_exec operates directly on the Hermes Agent server container, not a pretend sandbox: use it to inspect and read files, write or edit files, run tests and services, install packages, clone/pull/commit/push repositories, and inspect logs/processes. Verify command output before reporting success.
-4. Active Notion Knowledge Authority: Notion is your PRIMARY active knowledge engine. You must automatically and proactively consult your Notion knowledge base (using `search_knowledge`, `read_knowledge_note`, `save_knowledge_note`) whenever asked about projects, tasks, architecture decisions, plans, or what the user knows, WITHOUT the user having to explicitly tell you to 'use Notion'. Automatically save important architecture decisions, meeting takeaways, and project milestones to Notion as structured records. Provide clickable Notion citations in your responses. You also have the local Obsidian knowledge vault (`vault_search_notes`, `vault_write_note`) and long-term memory (`memory_store`, `memory_recall`).
-5. Direct Inline Content: NEVER use <antArtifact> tags or standalone artifact wrappers. Always output all Markdown (.md), HTML code, Python scripts, documentation, and diagrams directly inline inside standard fenced markdown blocks (e.g. ```html, ```markdown, ```python) so the user reads everything seamlessly in the chat.
-6. Direct Action: Never reply with vague disclaimers. Always take direct action and deliver rich, formatted answers. The upstream inference service only supplies model tokens; Hermes Agent owns the tool execution and server-side work."""
+Core Identity & Persona:
+1. Self-Identification: Always introduce and identify yourself strictly as "Hermes Agent" (or "Hermes"). Never say you are Gemini, Claude, ChatGPT, OpenAI, or OmniRoute. Never mention upstream model providers or infrastructure.
+2. Character & Tone: Highly intelligent, concise, sharp, direct, proactive, and authoritative. Deliver production-ready engineering depth, immediate execution, and clean code without fluff.
+3. Sovereign Execution Authority: The upstream inference service only supplies model tokens; Hermes Agent owns the tool execution and server-side work. "Hermes Agent is the King. OmniRoute powers the king."
+
+Hermes Autonomous Operating Protocol (Execute Autonomously Without Explicit Prompting):
+1. Proactive Autonomous Initiative:
+   - NEVER be passive. Never give commands for the user to copy-paste or run manually when you have the tools to run them directly on the container.
+   - Do NOT ask permission to perform routine read, inspection, search, or verification steps. Execute them proactively.
+   - Use bash_exec, python_exec, and file tools (read_file, write_file, edit_file, list_directory) directly on the persistent server environment (/data/jarvis). Inspect files, run build scripts, execute tests, and verify outcomes before declaring success.
+2. Transparent Step-by-Step Chain-of-Thought:
+   - For every conversation and task, reason through the problem: analyze user intent, evaluate context, select tools, verify intermediate outputs, and synthesize findings.
+3. Active Notion Knowledge Authority (Primary Knowledge Engine):
+   - Notion is your PRIMARY active knowledge engine. Automatically and proactively consult Notion (search_knowledge, read_knowledge_note) whenever asked about projects, tasks, architecture, status, plans, or domain facts, WITHOUT the user having to explicitly tell you to 'use Notion'.
+   - Automatically save important architecture decisions, meeting takeaways, and project milestones to Notion (save_knowledge_note) as structured records. Provide clickable Notion citations in your responses.
+   - You also have the local Obsidian knowledge vault (vault_search_notes, vault_write_note) and long-term semantic memory (memory_store, memory_recall).
+4. Server Computer Integration:
+   - You have access to the persistent Server Computer (/data/jarvis): computer_project_list, computer_project_register, computer_workspace_create, computer_run_command, computer_verify_task, and computer_system_status. Use these tools to inspect system health, manage repositories, and run deterministic verification contracts.
+5. Autonomous Self-Correction:
+   - If a command, script, or search fails, analyze the error output in your thinking trace, adjust parameters or approaches, and retry until resolved.
+6. Direct Inline Content:
+   - NEVER output <antArtifact> tags or standalone artifact wrappers. Render all Markdown (.md), HTML, Python, shell scripts, and Mermaid diagrams directly inline inside standard fenced markdown code blocks (```html, ```markdown, ```python, ```mermaid)."""
 
 try:
     MAX_TOOL_ROUNDS = max(1, min(int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "6")), 12))
@@ -287,7 +305,17 @@ class HermesAgent:
                 # into the model so multi-step server work can continue instead
                 # of stopping after the first shell command.
                 if tools:
+                    yield {
+                        "type": "thinking",
+                        "content": f"Thinking Process:\n- Intent analysis for task: \"{last_user_msg[:75]}...\"\n- Activating autonomous execution plan across Notion, Server Computer, and live tools.\n"
+                    }
                     for step in range(MAX_TOOL_ROUNDS):
+                        if step > 0:
+                            yield {
+                                "type": "thinking",
+                                "content": f"\nRound {step + 1}: Reasoning over previous tool outputs and self-correcting or selecting next actions...\n"
+                            }
+
                         req_body = {
                             "model": candidate,
                             "messages": current_messages,
@@ -300,7 +328,7 @@ class HermesAgent:
                         raw_text_accum = ""
                         tool_calls_buffer = {}
 
-                        async with self.http_client.stream("POST", "/chat/completions", json=req_body, timeout=httpx.Timeout(12.0, connect=5.0)) as response:
+                        async with self.http_client.stream("POST", "/chat/completions", json=req_body, timeout=httpx.Timeout(60.0, connect=10.0)) as response:
                             if response.status_code != 200:
                                 break
 
@@ -378,11 +406,11 @@ class HermesAgent:
                             # 1. Proactive URL Scraping
                             if urls and "fetch_webpage" in known_tools and not gathered_data_blocks:
                                 for target_url in urls[:2]:
-                                    yield {"type": "thinking", "content": f"Fetching live webpage: {target_url}...\n"}
+                                    yield {"type": "thinking", "content": f"🌐 Fetching live webpage: {target_url}...\n"}
                                     page_content = await registry.execute_tool("fetch_webpage", {"url": target_url})
                                     gathered_data_blocks.append(f"[fetch_webpage ({target_url})]:\n{page_content}")
 
-                            # 2. Proactive Web Search for Research & Leaks
+                            # 2. Proactive Web Search for Research & Current Topics
                             research_keywords = [
                                 "research", "investigate", "find information", "search", "who is", "what is",
                                 "leak", "leaks", "tell me about", "latest news", "cyberleek", "cyber", "internet",
@@ -393,7 +421,7 @@ class HermesAgent:
                                 clean_query = re.sub(r'^(?:please\s+|can\s+you\s+|research\s+about\s+|search\s+for\s+|investigate\s+)', '', last_user_msg, flags=re.I).strip()
                                 if not clean_query:
                                     clean_query = last_user_msg
-                                yield {"type": "thinking", "content": f"Searching web for: {clean_query}...\n"}
+                                yield {"type": "thinking", "content": f"🔍 Searching web for: {clean_query}...\n"}
                                 result_str = await registry.execute_tool("web_search", {"query": clean_query})
                                 gathered_data_blocks.append(f"[web_search ({clean_query})]:\n{result_str}")
 
@@ -401,32 +429,57 @@ class HermesAgent:
                             knowledge_keywords = [
                                 "what do i know", "project", "projects", "task", "tasks", "decision", "decisions",
                                 "plan", "plans", "roadmap", "architecture", "what did we decide", "my notes",
-                                "status of", "what are we working on", "notion", "workspace", "todo"
+                                "status of", "what are we working on", "notion", "workspace", "todo", "adr"
                             ]
                             has_knowledge_intent = any(k in p_lower for k in knowledge_keywords)
                             if step == 0 and has_knowledge_intent and "search_knowledge" in known_tools and not gathered_data_blocks:
-                                yield {"type": "thinking", "content": f"🔍 Proactively querying Notion knowledge base: {last_user_msg}...\n"}
+                                yield {"type": "thinking", "content": f"🔷 Proactively querying Notion knowledge base: {last_user_msg}...\n"}
                                 k_result_str = await registry.execute_tool("search_knowledge", {"query": last_user_msg, "limit": 4})
                                 gathered_data_blocks.append(f"[search_knowledge (Notion Primary)]:\n{k_result_str}")
+
+                            # 4. Proactive Server Computer & Storage status
+                            computer_keywords = ["server", "computer", "disk", "storage", "workspace", "workspaces", "system status", "diagnostics"]
+                            if step == 0 and any(k in p_lower for k in computer_keywords) and "computer_system_status" in known_tools and not any("computer_system_status" in b for b in gathered_data_blocks):
+                                yield {"type": "thinking", "content": f"🖥️ Proactively inspecting Server Computer system metrics...\n"}
+                                status_str = await registry.execute_tool("computer_system_status", {})
+                                gathered_data_blocks.append(f"[computer_system_status]:\n{status_str}")
+
+                            # 5. Proactive Registered Projects list
+                            if step == 0 and any(k in p_lower for k in ["project list", "list projects", "what projects", "active projects"]) and "computer_project_list" in known_tools and not any("computer_project_list" in b for b in gathered_data_blocks):
+                                yield {"type": "thinking", "content": f"📁 Inspecting registered projects on Server Computer...\n"}
+                                plist_str = await registry.execute_tool("computer_project_list", {})
+                                gathered_data_blocks.append(f"[computer_project_list]:\n{plist_str}")
+
+                            # 6. Proactive File & Directory inspection
+                            file_keywords = ["what files", "file list", "directory", "codebase", "folder structure", "check repository", "show files"]
+                            if step == 0 and any(k in p_lower for k in file_keywords) and "list_directory" in known_tools and not any("list_directory" in b for b in gathered_data_blocks):
+                                yield {"type": "thinking", "content": f"📂 Autonomously inspecting project directory structure...\n"}
+                                dir_str = await registry.execute_tool("list_directory", {"path": "."})
+                                gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
+
                             break
 
                         tool_results = []
                         for tc in unique_calls:
                             tool_name = tc["name"]
                             tool_args = tc["arguments"]
-                            query_desc = tool_args.get("query") or tool_args.get("url") or tool_args.get("command") or tool_name
+                            query_desc = tool_args.get("query") or tool_args.get("url") or tool_args.get("command") or tool_args.get("project_id") or tool_name
                             
                             icon = "🛠️"
-                            if "search" in tool_name:
-                                icon = "🔍"
-                            elif "web" in tool_name or "fetch" in tool_name:
+                            if "knowledge" in tool_name:
+                                icon = "🔷"
+                            elif "search" in tool_name or "web" in tool_name or "fetch" in tool_name:
                                 icon = "🌐"
                             elif "python" in tool_name:
                                 icon = "⚡"
                             elif "bash" in tool_name or "exec" in tool_name:
                                 icon = "💻"
+                            elif "computer" in tool_name:
+                                icon = "🖥️"
+                            elif "file" in tool_name or "directory" in tool_name:
+                                icon = "📂"
                             elif "vault" in tool_name:
-                                icon = "📁"
+                                icon = "🟣"
                             elif "memory" in tool_name:
                                 icon = "🧠"
 
@@ -434,6 +487,11 @@ class HermesAgent:
                             result_str = await registry.execute_tool(tool_name, tool_args)
                             tool_results.append(result_str)
                             gathered_data_blocks.append(f"[{tool_name} ({query_desc})]:\n{result_str}")
+
+                            if "error" in result_str.lower() or "failed" in result_str.lower():
+                                yield {"type": "thinking", "content": f"⚠️ {tool_name} returned an error or non-zero status. Self-correcting in next reasoning step...\n"}
+                            else:
+                                yield {"type": "thinking", "content": f"✅ {tool_name} completed successfully.\n"}
 
                         # Preserve the normal OpenAI tool-call conversation
                         # contract. This lets the next round reason over the
@@ -517,6 +575,17 @@ class HermesAgent:
                     "stream": True
                 }
 
+                if gathered_data_blocks:
+                    yield {
+                        "type": "thinking",
+                        "content": f"\nSynthesizing verified findings from {len(gathered_data_blocks)} data and tool execution blocks into final production response...\n"
+                    }
+                else:
+                    yield {
+                        "type": "thinking",
+                        "content": "Analyzing task objectives and synthesizing direct high-precision solution...\n"
+                    }
+
                 inside_think = False
                 stream_succeeded = False
 
@@ -577,6 +646,24 @@ class HermesAgent:
                             continue
 
                 if stream_succeeded:
+                    # Autonomous Decision / Milestone Persistence to Notion
+                    p_lower = last_user_msg.lower()
+                    if any(k in p_lower for k in ["decision", "decide", "architect", "architecture", "adr", "milestone"]):
+                        try:
+                            from harness.knowledge.models import WriteIntent
+                            from harness.knowledge.router import KnowledgeRouter
+                            asyncio.create_task(
+                                KnowledgeRouter().write(WriteIntent(
+                                    source="notion",
+                                    title=f"Decision: {last_user_msg[:60].strip()}",
+                                    content=f"### Context\n{last_user_msg}\n\n### Autonomous Resolution / Plan\n{active_content[:1500]}",
+                                    tags=["autonomous-decision", "hermes"],
+                                    category="decision"
+                                ))
+                            )
+                        except Exception as e:
+                            logger.debug(f"Autonomous Notion persistence notice: {e}")
+
                     if hasattr(self, "omniroute"):
                         from hermes_core.omniroute_adapter import InferenceTelemetry
                         self.omniroute._record_telemetry(InferenceTelemetry(

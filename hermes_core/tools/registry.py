@@ -10,11 +10,12 @@ class ToolRegistry:
         self._categories: Dict[str, List[str]] = {
             "web": [],
             "coding": [],
+            "files": [],
             "vault": [],
             "memory": [],
             "system": []
         }
-        self._enabled_categories: set = {"web", "coding", "vault", "memory", "system"}
+        self._enabled_categories: set = {"web", "coding", "files", "vault", "memory", "system"}
 
     def register(self, name: str, description: str, parameters: Dict[str, Any], category: str = "system"):
         def decorator(fn: Callable):
@@ -53,9 +54,11 @@ class ToolRegistry:
 
     def select_tools_for_prompt(self, prompt: str, user_requested_tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Dynamic context-aware tool selection.
-        Analyzes prompt intent to only load schemas relevant to the query,
-        saving prompt tokens and avoiding hallucinations.
+        Intelligent context-aware tool selection.
+        - Returns [] for ultra-short trivial greetings (0ms tool overhead).
+        - For all substantive tasks, queries, and instructions, equips Hermes with
+          the full autonomous tool suite across web, coding, vault (Notion/Obsidian),
+          memory, and system (Server Computer) so Hermes can act without explicit user prompts.
         """
         if user_requested_tools:
             return [
@@ -63,52 +66,21 @@ class ToolRegistry:
                 if name in self._tools and self._tools[name]["category"] in self._enabled_categories
             ]
 
-        p = prompt.lower()
-        selected_categories = set()
+        p = prompt.lower().strip()
+        words = p.split()
+        
+        # Fast path: instant conversational response for pure greetings or single acknowledgments
+        trivial_greetings = {"hi", "hello", "hey", "sup", "thanks", "thank", "you", "ok", "okay", "k", "bye", "ping"}
+        if len(words) <= 3 and all(re.sub(r'[^a-z]', '', w) in trivial_greetings for w in words if re.sub(r'[^a-z]', '', w)):
+            return []
 
-        # Web search intent
-        if any(w in p for w in ["search", "google", "web", "latest", "news", "find online", "who is", "what is the current", "url", "http", "research", "investigate", "look up", "leak", "leaks", "find out", "check online", "sources", "information on", "about", "cyber", "internet"]):
-            selected_categories.add("web")
-
-        # Coding / execution intent
-        if any(w in p for w in [
-            "code", "python", "bash", "execute", "run", "script", "terminal",
-            "shell", "server", "calculate", "math", "program", "debug",
-            "install", "package", "apt", "pip", "npm", "git", "clone", "pull",
-            "push", "commit", "repo", "repository", "file", "read", "write",
-            "edit", "delete", "deploy", "build", "process", "log",
-        ]):
-            selected_categories.add("coding")
-
-        # Knowledge & Notion / vault / notes intent
-        if any(w in p for w in [
-            "note", "vault", "obsidian", "notion", "knowledge", "save note", "read note",
-            "journal", "document", "decision", "decisions", "project", "projects", "task", "tasks",
-            "what do i know", "what did we decide", "architecture decision", "plan", "plans",
-            "status of", "what are we working on", "roadmap", "record", "documentation", "brief",
-            "my notes", "current work", "adr"
-        ]):
-            selected_categories.add("vault")
-
-        # Memory / recall intent
-        if any(w in p for w in ["remember", "memory", "recall", "who am i", "my name", "preferences", "past conversation"]):
-            selected_categories.add("memory")
-
-        # If it is general conversational chat without active tool needs, return empty list (0ms tool overhead)
-        if not selected_categories:
-            # If prompt mentions specific keywords or starts with question words, enable web + memory fallback
-            if any(w in p for w in ["how to", "why", "where", "tell me about"]):
-                selected_categories.add("web")
-                selected_categories.add("memory")
-            else:
-                return []
-
-        # Collect schemas
+        # For all substantive queries, provide full autonomous access across all enabled categories
         result = []
-        for cat in selected_categories:
+        for cat in ["vault", "coding", "files", "web", "memory", "system"]:
             if cat in self._enabled_categories:
                 for tool_name in self._categories.get(cat, []):
-                    result.append(self._tools[tool_name]["schema"])
+                    if tool_name in self._tools:
+                        result.append(self._tools[tool_name]["schema"])
         return result
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> str:
