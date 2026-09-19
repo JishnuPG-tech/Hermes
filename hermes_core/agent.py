@@ -7,6 +7,7 @@ import httpx
 from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
+from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
 
 UPSTREAM_URL = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
 UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", "Jishnu2005"))
@@ -149,6 +150,7 @@ class HermesAgent:
             timeout=120.0,
             follow_redirects=True
         )
+        self.omniroute = OmniRouteAdapter(upstream_url=self.upstream_url, api_key=self.api_key)
 
     def _resolve_candidate_models(self, requested_model: Optional[str], prompt: str = "") -> List[str]:
         """Builds an ordered fallback list of models dynamically tailored to task complexity."""
@@ -582,6 +584,15 @@ app = FastAPI(title="Hermes Agent Core", version="2.0.0")
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "hermes_core", "tools_count": len(registry._tools)}
+
+@app.get("/v1/omniroute/telemetry")
+async def omniroute_telemetry():
+    """Exposes inference telemetry recorded by OmniRouteAdapter under Hermes authority."""
+    return {
+        "status": "ok",
+        "upstream_url": agent.upstream_url,
+        "recent_telemetry": agent.omniroute.get_recent_telemetry() if hasattr(agent, "omniroute") else [],
+    }
 
 @app.post("/v1/chat")
 async def chat_endpoint(request: Request):
