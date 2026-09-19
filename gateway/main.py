@@ -18,6 +18,7 @@ from gateway.hermes_dashboard_api import router as dashboard_api_router
 from gateway.harness_api import router as harness_router
 from gateway.knowledge_api import router as knowledge_router
 from gateway.computer_api import router as computer_router
+from gateway.voice_api import router as voice_router
 
 
 
@@ -458,6 +459,7 @@ app.include_router(v1_sessions_router)
 app.include_router(harness_router)
 app.include_router(knowledge_router)
 app.include_router(computer_router)
+app.include_router(voice_router)
 app.include_router(webui_router)
 app.include_router(dashboard_api_router)
 app.include_router(claude_rest_router)
@@ -467,6 +469,12 @@ app.include_router(ignis_router)
 
 @app.on_event("startup")
 async def on_startup():
+    try:
+        from harness.voice import get_voice_gateway
+        vg = get_voice_gateway()
+        await vg.initialize()
+    except Exception as e:
+        print(f"Error initializing voice gateway: {e}")
     try:
         from gateway import channels_manager
         await channels_manager.start_all_channels()
