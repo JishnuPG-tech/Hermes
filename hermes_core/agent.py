@@ -280,6 +280,7 @@ class HermesAgent:
             current_messages = list(payload_messages)
             gathered_data_blocks = []
             executed_tool_signatures = set()
+            req_start = time.time()
             try:
                 # Stage 1: Autonomous Tool Execution. Tool results are fed back
                 # into the model so multi-step server work can continue instead
@@ -563,10 +564,28 @@ class HermesAgent:
                             continue
 
                 if stream_succeeded:
+                    if hasattr(self, "omniroute"):
+                        from hermes_core.omniroute_adapter import InferenceTelemetry
+                        self.omniroute._record_telemetry(InferenceTelemetry(
+                            request_id=f"req_{int(time.time() * 1000)}",
+                            requested_model=model or candidate,
+                            routed_model=candidate,
+                            total_latency_ms=int((time.time() - req_start) * 1000),
+                            status="success",
+                        ))
                     break
 
             except Exception as e:
                 last_error = f"Candidate {candidate} connection failed: {str(e)}"
+                if hasattr(self, "omniroute"):
+                    from hermes_core.omniroute_adapter import InferenceTelemetry
+                    self.omniroute._record_telemetry(InferenceTelemetry(
+                        request_id=f"req_{int(time.time() * 1000)}",
+                        requested_model=model or candidate,
+                        routed_model=candidate,
+                        total_latency_ms=int((time.time() - req_start) * 1000),
+                        status=f"error: {str(e)}",
+                    ))
                 continue
 
         if not stream_succeeded:
