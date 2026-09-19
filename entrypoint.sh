@@ -78,7 +78,7 @@ fi
 
 # Step 9: Start FastAPI Gateway (:8000)
 echo "[INIT] Starting FastAPI Ingress Gateway on port 8000..."
-uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --workers 1 > /dev/stdout 2>&1 &
+uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log --log-level warning > /dev/stdout 2>&1 &
 GATEWAY_PID=$!
 
 # Wait briefly for backends to bind
