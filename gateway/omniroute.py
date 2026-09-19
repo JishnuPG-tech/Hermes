@@ -132,10 +132,9 @@ async def omniroute_dashboard(request: Request, path: str = ""):
     return await handle_omniroute_proxy(request, path, html_fixup=fixup_omniroute_html)
 
 
-# ── API routes ──────────────────────────────────────────────────
-@router.api_route("/v1", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/api/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+# ── OmniRoute Direct API routes ───────────────────────────────────────
+@router.api_route("/omniroute/v1", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/omniroute/v1/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
 async def omniroute_v1(request: Request, path: str = ""):
     return await handle_omniroute_proxy(request, path)
 
