@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request, UploadFile, Query
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
 from gateway import sessions_api as session_store
