@@ -22,9 +22,9 @@ def sync_send_telegram(endpoint: str, json_payload: dict, timeout_sec: float = 1
         r = requests.post(url, json=json_payload, timeout=timeout_sec)
         if r.status_code == 200:
             return True
-        logger.warning(f"[Requests-Fallback] Telegram {endpoint} returned status {r.status_code}: {r.text}")
+        logger.debug(f"[Requests-Fallback] Telegram {endpoint} returned status {r.status_code}: {r.text}")
     except Exception as e:
-        logger.warning(f"[Requests-Fallback] Telegram {endpoint} error: {e}")
+        logger.debug(f"[Requests-Fallback] Telegram {endpoint} error: {e}")
     return False
 
 async def safe_telegram_post(endpoint: str, json_payload: dict, max_retries: int = 3) -> bool:
@@ -40,11 +40,11 @@ async def safe_telegram_post(endpoint: str, json_payload: dict, max_retries: int
                 res = await client.post(url, json=json_payload)
                 if res.status_code == 200:
                     return True
-                logger.warning(f"Telegram {endpoint} returned HTTP {res.status_code}: {res.text}")
+                logger.debug(f"Telegram {endpoint} returned HTTP {res.status_code}: {res.text}")
                 if res.status_code in (400, 403, 404):
                     return False
         except Exception as e:
-            logger.warning(f"Telegram {endpoint} async attempt {attempt}/{max_retries} failed: {e}")
+            logger.debug(f"Telegram {endpoint} async attempt {attempt}/{max_retries} failed: {e}")
 
         # 2. Try requests in worker thread as robust IPv4 fallback
         try:
@@ -52,7 +52,7 @@ async def safe_telegram_post(endpoint: str, json_payload: dict, max_retries: int
             if ok:
                 return True
         except Exception as e:
-            logger.warning(f"Telegram {endpoint} sync fallback attempt {attempt} failed: {e}")
+            logger.debug(f"Telegram {endpoint} sync fallback attempt {attempt} failed: {e}")
 
         if attempt < max_retries:
             await asyncio.sleep(1.0 * attempt)
@@ -219,26 +219,30 @@ async def start_telegram_bot():
     offset = 0
     await safe_telegram_post("deleteWebhook", {"drop_pending_updates": False}, max_retries=3)
 
+    consecutive_poll_errors = 0
     while True:
         try:
             url = f"{TELEGRAM_API_BASE}/getUpdates?offset={offset}&timeout=20"
             async with httpx.AsyncClient(timeout=httpx.Timeout(35.0, connect=10.0), follow_redirects=True) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
+                    consecutive_poll_errors = 0
                     data = resp.json()
                     for update in data.get("result", []):
                         offset = update["update_id"] + 1
                         asyncio.create_task(process_telegram_update(update))
                 elif resp.status_code == 409:
-                    logger.info("Telegram getUpdates returned 409 (Webhook is active). Backing off polling.")
-                    await asyncio.sleep(20)
+                    logger.debug("Telegram getUpdates returned 409 (Webhook is active). Backing off polling.")
+                    await asyncio.sleep(25)
                 else:
-                    logger.warning(f"Telegram getUpdates returned HTTP {resp.status_code}: {resp.text}")
-                    await asyncio.sleep(5)
+                    logger.debug(f"Telegram getUpdates returned HTTP {resp.status_code}: {resp.text}")
+                    await asyncio.sleep(10)
             await asyncio.sleep(0.5)
         except Exception as e:
-            logger.warning(f"Telegram polling cycle status: {e}")
-            await asyncio.sleep(10)
+            consecutive_poll_errors += 1
+            backoff_sec = min(60, 5 * (2 ** min(consecutive_poll_errors, 4)))
+            logger.debug(f"Telegram polling cycle status: {e} (backing off {backoff_sec}s)")
+            await asyncio.sleep(backoff_sec)
 
 if __name__ == "__main__":
     asyncio.run(start_telegram_bot())
