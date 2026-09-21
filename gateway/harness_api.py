@@ -220,15 +220,15 @@ async def list_workforce_roles():
 
 
 # ── 24x7 Scheduled Automations & Cron API ───────────────────────
-from pathlib import Path
+import pathlib
 import os
 import time
 import uuid
 
-def _get_automations_file() -> Path:
-    p = Path("/data/jarvis/automations.json")
+def _get_automations_file() -> pathlib.Path:
+    p = pathlib.Path("/data/jarvis/automations.json")
     if not p.parent.exists():
-        p = Path("./data/jarvis/automations.json")
+        p = pathlib.Path("./data/jarvis/automations.json")
     p.parent.mkdir(parents=True, exist_ok=True)
     if not p.exists():
         defaults = [
@@ -303,7 +303,7 @@ async def create_automation(request: Request):
     return JSONResponse(new_item, status_code=201)
 
 @router.post("/v1/automations/{automation_id}/toggle")
-async def toggle_automation(automation_id: str = Path(...)):
+async def toggle_automation(automation_id: str):
     """Toggle enabled status of an automation."""
     f = _get_automations_file()
     try:
@@ -323,7 +323,7 @@ async def toggle_automation(automation_id: str = Path(...)):
     return JSONResponse(target)
 
 @router.post("/v1/automations/{automation_id}/run_now")
-async def run_automation_now(automation_id: str = Path(...)):
+async def run_automation_now(automation_id: str):
     """Immediately trigger execution of an automation."""
     f = _get_automations_file()
     try:
