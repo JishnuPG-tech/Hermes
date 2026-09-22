@@ -139,12 +139,13 @@ def set_active_model(model_name: str, chat_id: Optional[str] = None):
         ACTIVE_HERMES_MODEL = model_name
 
 MODEL_ALIAS_MAP = {
-    "claude-3-5-sonnet-20241022": "auto/smart",
-    "claude-3-5-haiku-20241022": "auto/best-fast",
-    "claude-3-opus-20240229": "auto/best-coding",
-    "hermes-agent": "auto/smart",
-    "default": "auto/smart"
+    "claude-3-5-sonnet-20241022": "hermes-agent",
+    "claude-3-5-haiku-20241022": "hermes-agent",
+    "claude-3-opus-20240229": "hermes-agent",
+    "hermes-agent": "hermes-agent",
+    "default": "hermes-agent"
 }
+
 
 def get_candidate_models(requested_model: Optional[str] = None, chat_id: Optional[str] = None) -> List[str]:
     candidates = []
