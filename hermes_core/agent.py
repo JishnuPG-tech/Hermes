@@ -202,7 +202,7 @@ def format_dynamic_tool_phrases(tool_name: str, tool_args: Dict[str, Any]) -> tu
         return f"Running {clean}...", f"Reading {clean} output..."
 
 
-def generate_dynamic_thinking_steps(prompt: str) -> List[str]:
+def generate_dynamic_thinking_steps(prompt: str, has_images: bool = False) -> List[str]:
     """
     Dynamically crafts AI short thoughts matching the user query:
     Analysing the request -> Executing / Investigating -> Inspecting output -> Organising for user -> Ready to serve
@@ -211,7 +211,15 @@ def generate_dynamic_thinking_steps(prompt: str) -> List[str]:
     clean_p = prompt.strip()
     p_lower = clean_p.lower()
 
-    if any(p_lower.startswith(k) for k in ["run ", "exec ", "execute "]):
+    if has_images:
+        return [
+            "Analysing the attached image and visual details...",
+            "Performing visual inspection and OCR text extraction...",
+            "Inspecting objects, layout, and visual features...",
+            "Organising analysis for user...",
+            "Ready to serve..."
+        ]
+    elif any(p_lower.startswith(k) for k in ["run ", "exec ", "execute "]):
         cmd = re.sub(r'^(?:run|exec|execute)\s+', '', clean_p, flags=re.I).strip()
         short_cmd = cmd.split()[0] if cmd else "command"
         return [
@@ -337,6 +345,8 @@ class HermesAgent:
         # 1. Extract prompt & messages first
         last_user_msg = ""
         user_msgs = []
+        has_images = False
+        image_parts = []
         for m in messages:
             if m.get("role") != "system":
                 user_msgs.append(m)
@@ -345,15 +355,21 @@ class HermesAgent:
                 if isinstance(content, str):
                     last_user_msg = content
                 elif isinstance(content, list):
+                    text_parts = []
                     for part in content:
-                        if isinstance(part, dict) and part.get("type") == "text":
-                            last_user_msg += part.get("text", "")
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                text_parts.append(part.get("text", ""))
+                            elif part.get("type") == "image_url":
+                                has_images = True
+                                image_parts.append(part)
+                    last_user_msg = " ".join(text_parts).strip()
 
         # 2. RAG Context Injection from Semantic Vector Database
         rag_context = ""
         try:
             from hermes_core.tools.memory_tools import search_semantic_memory
-            if last_user_msg and len(last_user_msg.strip()) > 3:
+            if last_user_msg and len(last_user_msg.strip()) > 3 and not has_images:
                 recalled = search_semantic_memory(last_user_msg, top_k=2, threshold=0.18)
                 if recalled:
                     rag_blocks = [f"[{m['title']}]: {m['content']}" for m in recalled]
@@ -362,7 +378,17 @@ class HermesAgent:
             logger.debug(f"Semantic RAG recall notice: {e}")
 
         # 3. Build candidate models & tools
-        candidate_models = self._resolve_candidate_models(model, prompt=last_user_msg)
+        if has_images:
+            candidate_models = [
+                "google/gemini-2.5-flash",
+                "google/gemini-2.5-pro",
+                "meta-llama/llama-3.2-11b-vision-instruct",
+                "qwen/qwen-2.5-vl-72b-instruct",
+                "auto/best-fast",
+                "auto/smart"
+            ]
+        else:
+            candidate_models = self._resolve_candidate_models(model, prompt=last_user_msg)
         
         full_system = HERMES_MASTER_SYSTEM_PROMPT
         if rag_context:
@@ -373,7 +399,7 @@ class HermesAgent:
         payload_messages = [{"role": "system", "content": full_system}] + user_msgs
 
         tools = []
-        if enable_dynamic_tools:
+        if enable_dynamic_tools and not has_images:
             tools = registry.select_tools_for_prompt(last_user_msg)
 
         known_tools = set(registry._tools.keys())
@@ -389,7 +415,7 @@ class HermesAgent:
                 # Stage 1: Autonomous Tool Execution. Tool results are fed back
                 # into the model so multi-step server work can continue instead
                 # of stopping after the first shell command.
-                dyn_steps = generate_dynamic_thinking_steps(last_user_msg)
+                dyn_steps = generate_dynamic_thinking_steps(last_user_msg, has_images=has_images)
                 if dyn_steps:
                     yield {
                         "type": "thinking",
@@ -640,8 +666,22 @@ class HermesAgent:
                         "Deliver precise step-by-step mathematical reasoning, structured markdown comparison tables, "
                         "and KaTeX LaTeX formulas for all equations."
                     )
+                elif has_images:
+                    synth_system += (
+                        "You are operating as Hermes Multimodal Vision & OCR Expert. "
+                        "Thoroughly inspect the user's uploaded image or document. Extract and transcribe all visible text, numbers, code, "
+                        "UI elements, error messages, and diagrams. Deliver a crystal-clear, accurate, loyal, and helpful response."
+                    )
                 else:
                     synth_system += "Deliver sweet, loyal, caring, and respectful assistance directly to the user."
+
+                if has_images:
+                    synth_system += (
+                        "\n\nMultimodal & OCR Instructions:\n"
+                        "- Carefully inspect the attached image(s).\n"
+                        "- Perform full OCR text transcription on all textual elements.\n"
+                        "- Explain the visual details, objects, structure, or errors with highest fidelity.\n"
+                    )
 
                 synth_system += (
                     "\n\nStrict Rules:\n"
@@ -670,7 +710,13 @@ class HermesAgent:
                             f"[Instruction]: Present the output of the command/tool in a sweet, loyal, and respectful conversation (e.g. 'Here is the output of the command that you asked for:' followed by the output code block and a courteous offer for next steps). Do NOT write an unrequested executive summary or essay."
                         )
 
-                synth_messages.append({"role": "user", "content": active_content})
+                if has_images and image_parts:
+                    synth_messages.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": active_content}] + image_parts
+                    })
+                else:
+                    synth_messages.append({"role": "user", "content": active_content})
 
                 synth_req = {
                     "model": candidate,
