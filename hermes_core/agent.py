@@ -429,11 +429,15 @@ class HermesAgent:
         known_tools = set(registry._tools.keys())
         stream_succeeded = False
         last_error = ""
+        # Keep the latest conversation state when switching model candidates.
+        working_messages = list(payload_messages)
 
         for candidate in candidate_models:
-            current_messages = list(payload_messages)
+            current_messages = list(working_messages)
             gathered_data_blocks = []
             executed_tool_signatures = set()
+            candidate_requires_fallback = False
+            premature_stall_retries = 0
             req_start = time.time()
             try:
                 # Stage 1: Autonomous Tool Execution. Tool results are fed back
