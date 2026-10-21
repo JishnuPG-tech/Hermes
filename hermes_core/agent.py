@@ -559,8 +559,11 @@ class HermesAgent:
                             if (
                                 tools
                                 and AutonomyPolicy.is_action_oriented_task(last_user_msg)
-                                and AutonomyPolicy.is_unfulfilled_action_announcement(
-                                    raw_text_accum, has_tool_calls=False
+                                and (
+                                    AutonomyPolicy.is_unfulfilled_action_announcement(
+                                        raw_text_accum, has_tool_calls=False
+                                    )
+                                    or not gathered_data_blocks
                                 )
                             ):
                                 if premature_stall_retries < MAX_STALL_RETRIES:
