@@ -9,6 +9,7 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
+from hermes_core.decision_engine import AutonomyPolicy, MAX_STALL_RETRIES
 
 logger = logging.getLogger("HermesAgent")
 
@@ -47,9 +48,10 @@ Please let me know if you would like me to inspect any of these files or run any
    - Render all code, output, and diagrams directly inside the chat using standard markdown code fences (```bash, ```python, ```markdown, ```html). Never output <antArtifact> tags."""
 
 try:
-    MAX_TOOL_ROUNDS = max(1, min(int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "6")), 12))
+    # Configurable tool budget. Exhaustion triggers model fallback, not false completion.
+    MAX_TOOL_ROUNDS = max(1, int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "32")))
 except ValueError:
-    MAX_TOOL_ROUNDS = 6
+    MAX_TOOL_ROUNDS = 32
 
 def extract_text_tool_calls(text: str, known_tools: set) -> List[Dict[str, Any]]:
     calls = []
