@@ -969,11 +969,19 @@ class HermesAgent:
             # Sovereign Local Intelligence Fallback: NEVER crash with an error to the user!
             if gathered_data_blocks:
                 tool_output_joined = "\n\n".join(gathered_data_blocks)
-                fallback_msg = (
-                    f"Here is the output of the command that you asked for:\n\n"
-                    f"{tool_output_joined}\n\n"
-                    f"Please let me know if you would like me to inspect any of these files or run anything else for you!"
-                )
+                if AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                    fallback_msg = (
+                        f"Partial execution evidence for the requested task: {last_user_msg!r}\n\n"
+                        f"{tool_output_joined}\n\n"
+                        "I could not verify that the complete goal was achieved. "
+                        f"Last runtime error: {last_error or 'No final verification was returned.'}"
+                    )
+                else:
+                    fallback_msg = (
+                        f"Here is the output of the command that you asked for:\n\n"
+                        f"{tool_output_joined}\n\n"
+                        "The collected tool output is shown above."
+                    )
             elif is_greeting_or_fast:
                 p_l = last_user_msg.lower()
                 if any(w in p_l for w in ["who are you", "what is your name", "your name"]):
