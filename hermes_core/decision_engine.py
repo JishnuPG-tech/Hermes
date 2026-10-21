@@ -147,6 +147,12 @@ class GoalVerifier:
                     missing_aspect="Only preparatory inspection commands were executed; core creation/rendering was not executed.",
                 )
 
+            if not has_success_indicator:
+                return GoalVerificationResult(
+                    is_verified=False,
+                    missing_aspect="An operational command ran, but the output does not provide clear evidence of success.",
+                )
+
         return GoalVerificationResult(is_verified=True, evidence_summary="Tool execution evidence satisfies the goal.")
 
 
