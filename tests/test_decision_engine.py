@@ -123,6 +123,15 @@ class AutonomyPolicyTests(unittest.TestCase):
         res = GoalVerifier.evaluate("What is MoviePy?", [], "MoviePy is a library.")
         self.assertTrue(res.is_verified)
 
+    def test_goal_verifier_rejects_operational_command_without_success_evidence(self):
+        goal = "Create a video from clips and render it to output.mp4"
+        evidence = [
+            "[bash_exec (python render.py)]:\\nRendering started, waiting...",
+        ]
+        res = GoalVerifier.evaluate(goal, evidence, "The render command was started.")
+        self.assertFalse(res.is_verified)
+        self.assertIn("clear evidence of success", res.missing_aspect)
+
     def test_structured_plan_generator_for_video(self):
         plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
         step_ids = [s.id for s in plan.steps]
