@@ -432,6 +432,31 @@ class HermesAgent:
         # Keep the latest conversation state when switching model candidates.
         working_messages = list(payload_messages)
         working_data_blocks = []
+        # Plan generation is deterministic and side-effect free. The current
+        # model loop uses the plan to frame recovery directives; tool execution
+        # and evidence remain owned by the existing registry.
+        task_plan = (
+            StructuredPlanGenerator.generate_plan(last_user_msg)
+            if tools and AutonomyPolicy.is_action_oriented_task(last_user_msg)
+            else None
+        )
+        plan_context = ""
+        if task_plan:
+            plan_context = (
+                "\\n\\n[HERMES EXECUTION PLAN - NOT YET COMPLETED]\\n"
+                f"Goal: {task_plan.goal}\\n"
+                "Complete each dependent step in order, recording actual results. "
+                "Do not mark an unexecuted step as complete. The plan is guidance; "
+                "choose the registered tool and arguments based on current evidence.\\n"
+                + "\\n".join(
+                    f"{index + 1}. [{step.id}] {step.action} "
+                    f"(success criteria: {step.success_criteria or 'verify the result'})"
+                    for index, step in enumerate(task_plan.steps)
+                )
+                + "\\nA progress announcement is not task completion."
+            )
+            payload_messages[0]["content"] += plan_context
+            working_messages = list(payload_messages)
 
         for candidate in candidate_models:
             current_messages = list(working_messages)
