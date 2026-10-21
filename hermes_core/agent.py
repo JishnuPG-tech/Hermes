@@ -548,6 +548,50 @@ class HermesAgent:
                                 unique_calls.append(tc)
 
                         if not unique_calls:
+                            # Progress text alone does not complete an action-oriented task.
+                            if (
+                                tools
+                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
+                                and AutonomyPolicy.is_unfulfilled_action_announcement(
+                                    raw_text_accum, has_tool_calls=False
+                                )
+                            ):
+                                if premature_stall_retries < MAX_STALL_RETRIES:
+                                    premature_stall_retries += 1
+                                    current_messages.append({
+                                        "role": "assistant",
+                                        "content": raw_text_accum,
+                                    })
+                                    current_messages.append({
+                                        "role": "user",
+                                        "content": AutonomyPolicy.recovery_directive(
+                                            last_user_msg,
+                                            raw_text_accum,
+                                            premature_stall_retries,
+                                        ),
+                                    })
+                                    working_messages = list(current_messages)
+                                    yield {
+                                        "type": "thinking",
+                                        "content": (
+                                            "Decision Engine: action announcement detected "
+                                            f"without a tool call; retrying "
+                                            f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\\n"
+                                        ),
+                                    }
+                                    continue
+
+                                candidate_requires_fallback = True
+                                last_error = (
+                                    f"Model {candidate} repeatedly announced an action "
+                                    "without producing a tool call."
+                                )
+                                yield {
+                                    "type": "thinking",
+                                    "content": "Trying the next model with the saved task context.\\n",
+                                }
+                                break
+
                             p_lower = last_user_msg.lower()
                             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', last_user_msg)
                             
