@@ -3,7 +3,10 @@ from pathlib import Path
 from hermes_core.tools.registry import registry
 
 VAULT_DIR = Path(os.getenv("OBSIDIAN_VAULT_DIR", "/data/obsidian/vault"))
-VAULT_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
 
 @registry.register(
     name="vault_search_notes",

@@ -1,41 +1,41 @@
 try:
     import hermes_core.tools.web_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.terminal_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.file_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.vault_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.memory_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.knowledge_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.computer_tools
-except ImportError:
+except Exception:
     pass
 
 try:
     import hermes_core.tools.skill_tools
-except ImportError:
+except Exception:
     pass
 
 from hermes_core.tools.registry import registry
