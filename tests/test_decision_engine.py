@@ -151,5 +151,52 @@ class AutonomyPolicyTests(unittest.TestCase):
         self.assertIn("Recovery attempt 1", directive)
 
 
+    def test_structured_plan_advance_with_evidence_and_completion(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy and render it")
+        self.assertEqual(plan.next_ready_step().id, "inspect_env")
+
+        # Step 1: inspect
+        s1 = plan.advance_with_evidence("bash_exec", {"command": "python3 -c 'import moviepy'"}, "1.0.3")
+        self.assertIsNotNone(s1)
+        self.assertEqual(s1.status, "completed")
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+
+        # Step 2: render
+        s2 = plan.advance_with_evidence("bash_exec", {"command": "python render.py"}, "Rendering complete exit code: 0")
+        self.assertIsNotNone(s2)
+        self.assertEqual(s2.status, "completed")
+        self.assertEqual(plan.next_ready_step().id, "verify_output")
+
+        # Step 3: verify output
+        s3 = plan.advance_with_evidence("bash_exec", {"command": "ls -l output.mp4"}, "output.mp4 14MB")
+        self.assertIsNotNone(s3)
+        self.assertEqual(s3.status, "completed")
+        self.assertTrue(plan.is_complete)
+        self.assertIsNone(plan.next_ready_step())
+
+    def test_structured_plan_serialization(self):
+        plan = StructuredPlanGenerator.generate_plan("Clone repo and test")
+        d = plan.to_dict()
+        self.assertEqual(d["goal"], "Clone repo and test")
+        self.assertTrue(len(d["steps"]) >= 2)
+        restored = StructuredPlan.from_dict(d)
+        self.assertEqual(restored.goal, plan.goal)
+        self.assertEqual(len(restored.steps), len(plan.steps))
+        self.assertEqual(restored.steps[0].id, plan.steps[0].id)
+
+    def test_plan_step_directive_formatting(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video")
+        step = plan.next_ready_step()
+        directive = AutonomyPolicy.plan_step_directive(
+            plan=plan,
+            step=step,
+            previous_response="I will check environment",
+            attempt=1,
+        )
+        self.assertIn("[inspect_env]", directive)
+        self.assertIn("Inspect Python & MoviePy environment", directive)
+        self.assertIn("Recovery attempt 1", directive)
+
+
 if __name__ == "__main__":
     unittest.main()

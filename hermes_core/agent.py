@@ -742,6 +742,32 @@ class HermesAgent:
                                 and AutonomyPolicy.is_action_oriented_task(last_user_msg)
                                 and gathered_data_blocks
                             ):
+                                if task_plan and not task_plan.is_complete:
+                                    next_step = task_plan.next_ready_step()
+                                    if next_step and premature_stall_retries < MAX_STALL_RETRIES:
+                                        premature_stall_retries += 1
+                                        current_messages.extend([
+                                            {"role": "assistant", "content": raw_text_accum},
+                                            {
+                                                "role": "user",
+                                                "content": AutonomyPolicy.plan_step_directive(
+                                                    task_plan,
+                                                    next_step,
+                                                    raw_text_accum,
+                                                    premature_stall_retries,
+                                                ),
+                                            },
+                                        ])
+                                        working_messages = list(current_messages)
+                                        yield {
+                                            "type": "thinking",
+                                            "content": (
+                                                f"Decision Engine: advancing to plan step [{next_step.id}] '{next_step.action}' "
+                                                f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
+                                            ),
+                                        }
+                                        continue
+
                                 verification = GoalVerifier.evaluate(
                                     last_user_msg, gathered_data_blocks, raw_text_accum
                                 )
@@ -792,6 +818,8 @@ class HermesAgent:
                             result_str = await registry.execute_tool(tool_name, tool_args)
                             tool_results.append(result_str)
                             gathered_data_blocks.append(f"[{tool_name} ({query_desc})]:\n{result_str}")
+                            if task_plan:
+                                task_plan.advance_with_evidence(tool_name, tool_args, result_str)
 
                             if "error" in result_str.lower() or "failed" in result_str.lower():
                                 yield {"type": "thinking", "content": f"Analyzing error in {tool_name}...\n"}

@@ -46,6 +46,61 @@ class StructuredPlan:
     def is_complete(self) -> bool:
         return bool(self.steps) and all(step.status == "completed" for step in self.steps)
 
+    def advance_with_evidence(self, tool_name: str, tool_args: Dict[str, Any], tool_output: str) -> Optional[PlanStep]:
+        """Correlate tool output with the current ready step and advance if satisfied."""
+        step = self.next_ready_step()
+        if not step:
+            return None
+
+        error_indicators = ("command not found", "traceback (most recent call last)", "syntaxerror:", "exit code: 1", "exit code: 2")
+        is_error = any(err in tool_output.lower() for err in error_indicators)
+
+        step.evidence = tool_output[:500] if tool_output else "Executed"
+        if not is_error:
+            step.status = "completed"
+        else:
+            step.status = "failed"
+        return step
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "goal": self.goal,
+            "assumptions": self.assumptions,
+            "steps": [
+                {
+                    "id": s.id,
+                    "action": s.action,
+                    "tool": s.tool,
+                    "arguments": s.arguments,
+                    "status": s.status,
+                    "success_criteria": s.success_criteria,
+                    "evidence": s.evidence,
+                    "depends_on": s.depends_on,
+                }
+                for s in self.steps
+            ],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> StructuredPlan:
+        return cls(
+            goal=data.get("goal", ""),
+            assumptions=data.get("assumptions", []),
+            steps=[
+                PlanStep(
+                    id=s["id"],
+                    action=s["action"],
+                    tool=s.get("tool"),
+                    arguments=s.get("arguments", {}),
+                    status=s.get("status", "pending"),
+                    success_criteria=s.get("success_criteria", ""),
+                    evidence=s.get("evidence"),
+                    depends_on=s.get("depends_on", []),
+                )
+                for s in data.get("steps", [])
+            ],
+        )
+
 
 @dataclass
 class ActionDecision:
@@ -334,6 +389,27 @@ class AutonomyPolicy:
             "required authorization. If genuinely blocked, state the specific blocker "
             "only after checking available alternatives. Recovery attempt "
             f"{attempt}.\nOriginal goal: {goal}\nPrevious announcement: {previous}"
+        )
+
+    @staticmethod
+    def plan_step_directive(
+        plan: StructuredPlan,
+        step: PlanStep,
+        previous_response: str,
+        attempt: int,
+    ) -> str:
+        """Directive injected to advance to a specific pending step in the structured plan."""
+        completed = [s.id for s in plan.steps if s.status == "completed"]
+        previous = re.sub(r"\s+", " ", previous_response or "").strip()[:200]
+        return (
+            f"[HERMES RUNTIME DECISION ENGINE] Plan Progress: "
+            f"Completed steps: {completed or 'None'}. "
+            f"Current pending step: [{step.id}] '{step.action}'. "
+            f"Success criteria: {step.success_criteria or 'Execute the operation and verify its result'}. "
+            "Do not stop, defer to the user, or announce what you plan to do. "
+            f"Execute the concrete tool call for step [{step.id}] immediately now. "
+            f"Recovery attempt {attempt}.\n"
+            f"Previous message: {previous}"
         )
 
     @staticmethod
