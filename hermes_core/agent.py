@@ -604,10 +604,22 @@ class HermesAgent:
                                     })
                                     current_messages.append({
                                         "role": "user",
-                                        "content": AutonomyPolicy.recovery_directive(
-                                            last_user_msg,
-                                            raw_text_accum,
-                                            premature_stall_retries,
+                                        "content": (
+                                            AutonomyPolicy.partial_goal_directive(
+                                                last_user_msg,
+                                                gathered_data_blocks,
+                                                raw_text_accum,
+                                                GoalVerifier.evaluate(
+                                                    last_user_msg, gathered_data_blocks, raw_text_accum
+                                                ).missing_aspect or "No executable step was produced",
+                                                premature_stall_retries,
+                                            )
+                                            if gathered_data_blocks
+                                            else AutonomyPolicy.recovery_directive(
+                                                last_user_msg,
+                                                raw_text_accum,
+                                                premature_stall_retries,
+                                            )
                                         ),
                                     })
                                     working_messages = list(current_messages)
