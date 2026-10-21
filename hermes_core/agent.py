@@ -664,6 +664,33 @@ class HermesAgent:
                                 gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
                                 yield {"type": "thinking", "content": "Reading the ls output...\n"}
 
+                            if (
+                                tools
+                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
+                                and not gathered_data_blocks
+                            ):
+                                if premature_stall_retries < MAX_STALL_RETRIES:
+                                    premature_stall_retries += 1
+                                    current_messages.extend([
+                                        {"role": "assistant", "content": raw_text_accum},
+                                        {
+                                            "role": "user",
+                                            "content": AutonomyPolicy.recovery_directive(
+                                                last_user_msg, raw_text_accum,
+                                                premature_stall_retries,
+                                            ),
+                                        },
+                                    ])
+                                    working_messages = list(current_messages)
+                                    yield {
+                                        "type": "thinking",
+                                        "content": "Decision Engine: continuing the unfinished task.\\n",
+                                    }
+                                    continue
+                                candidate_requires_fallback = True
+                                last_error = "No tool result was produced for the requested action."
+                                break
+
                             break
 
                         tool_results = []
