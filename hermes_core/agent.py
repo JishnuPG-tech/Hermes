@@ -956,11 +956,11 @@ class HermesAgent:
                     )
                 else:
                     fallback_msg = "Hello! I am Hermes Agent, your loyal companion and autonomous partner. How may I serve you today?"
-            elif is_coding:
+            elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
                 fallback_msg = (
-                    f"I have reviewed your coding request regarding: '{last_user_msg}'. "
-                    f"I am actively connected to your codebase workspace and ready to implement or run this for you. "
-                    f"Please let me know if you would like me to execute it directly on the server!"
+                    f"The requested action could not be verified: {last_user_msg!r}. "
+                    f"Last runtime error: {last_error or 'No executable action was produced.'} "
+                    "The task remains unresolved."
                 )
             else:
                 fallback_msg = (
