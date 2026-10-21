@@ -65,11 +65,23 @@ class AutonomyPolicy:
         r"tell\s+me\s+how\b|can\s+you\s+explain\b|could\s+you\s+explain\b)",
         re.IGNORECASE,
     )
-    _ACTION_VERB = re.compile(
-        r"\b(?:run|execute|install|render|build|create|generate|deploy|clone|"
-        r"download|upload|fix|debug|implement|modify|edit|update|inspect|check|"
-        r"verify|test|compile|search|find|look\s+up|fetch|read|write|make|"
-        r"convert|transcode|process|open|scan|analy[sz]e|review|commit|push)\b",
+    _DIRECT_ACTION_VERB = re.compile(
+        r"\b(?:run|execute|install|render|deploy|clone|download|upload|fix|debug|"
+        r"implement|modify|edit|update|inspect|check|verify|test|compile|search|"
+        r"find|look\s+up|fetch|read|convert|transcode|process|open|scan|"
+        r"analy[sz]e|review|commit|push)\b",
+        re.IGNORECASE,
+    )
+    _ARTIFACT_VERB = re.compile(r"\b(?:build|create|generate|make|write)\b", re.IGNORECASE)
+    _ARTIFACT_TARGET = re.compile(
+        r"\b(?:video|movie|clip|image|audio|file|script|code|app|application|apk|"
+        r"website|web\s+app|repository|repo|project|dataset|package|binary|"
+        r"document|pdf|spreadsheet|asset)\b",
+        re.IGNORECASE,
+    )
+    _WORKSPACE_TARGET = re.compile(
+        r"\b(?:in|inside|within|to|on)\s+(?:the\s+)?"
+        r"(?:repo|repository|workspace|server|project|working\s+directory|codebase)\b",
         re.IGNORECASE,
     )
     _ANNOUNCEMENT_PATTERNS = (
@@ -104,7 +116,15 @@ class AutonomyPolicy:
         text = (prompt or "").strip()
         if not text or cls._INFORMATIONAL_PREFIX.search(text):
             return False
-        return bool(cls._ACTION_VERB.search(text))
+        if cls._DIRECT_ACTION_VERB.search(text):
+            return True
+        return bool(
+            cls._ARTIFACT_VERB.search(text)
+            and (
+                cls._ARTIFACT_TARGET.search(text)
+                or cls._WORKSPACE_TARGET.search(text)
+            )
+        )
 
     @classmethod
     def is_unfulfilled_action_announcement(cls, raw_text: str, has_tool_calls: bool) -> bool:
