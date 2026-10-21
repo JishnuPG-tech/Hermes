@@ -750,7 +750,20 @@ class StructuredPlanGenerator:
                 ],
             )
 
-        # 5. Default universal two-step plan
+        # 5. Inspection, directory listing, or terminal query tasks
+        if any(w in goal_lower for w in ["ls", "list", "dir", "show files", "pwd", "whoami", "check status", "system info", "health"]):
+            return StructuredPlan(
+                goal=goal,
+                steps=[
+                    PlanStep(
+                        id="execute_inspection",
+                        action="Execute inspection command and return output to user",
+                        success_criteria="Inspection command produced output",
+                    ),
+                ],
+            )
+
+        # 6. Default universal two-step plan
         return StructuredPlan(
             goal=goal,
             steps=[
