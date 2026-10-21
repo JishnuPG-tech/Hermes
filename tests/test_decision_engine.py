@@ -23,6 +23,11 @@ class AutonomyPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_creative_text_request_does_not_require_tools(self):
+        self.assertFalse(
+            AutonomyPolicy.is_action_oriented_task("Create a poem about the rain")
+        )
+
     def test_moviepy_announcement_is_unfulfilled_without_tool_call(self):
         response = (
             "Let me check which MoviePy version we have and build the video accordingly!"
