@@ -42,33 +42,24 @@ class InferenceTelemetry:
 # Semantic routing profiles mapping task needs to priority model cascades
 ROUTING_PROFILES: Dict[str, List[str]] = {
     "fast": [
-        "nvidia/google/gemma-4-31b-it",
-        "nvidia/nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "antigravity/gemini-2.5-flash",
-        "antigravity/gemini-3.7-flash-medium",
-        "auto/fast",
+        "antigravity/gemini-3-flash",
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+        "antigravity/gemini-3.8-flash-tiered",
     ],
     "coding": [
-        "nvidia/nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/google/gemma-4-31b-it",
-        "antigravity/gemini-2.5-flash",
-        "antigravity/gemini-3.7-flash-medium",
-        "antigravity/claude-sonnet-4-6",
-        "auto/best-coding",
+        "antigravity/gemini-3-flash",
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+        "antigravity/gemini-3.8-flash-tiered",
     ],
     "reasoning": [
-        "nvidia/nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-        "nvidia/google/gemma-4-31b-it",
-        "antigravity/gemini-2.5-flash",
-        "auto/best-reasoning",
+        "antigravity/gemini-3-flash",
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+        "antigravity/gemini-3.8-flash-tiered",
     ],
     "default": [
-        "nvidia/nvidia/nemotron-3-super-120b-a12b",
-        "nvidia/google/gemma-4-31b-it",
-        "antigravity/gemini-2.5-flash",
-        "auto/best-coding",
+        "antigravity/gemini-3-flash",
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+        "antigravity/gemini-3.8-flash-tiered",
     ],
 }
 

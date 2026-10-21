@@ -22,7 +22,7 @@ logger = logging.getLogger("HermesAgent")
 
 UPSTREAM_URL = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
 UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", "Jishnu2005"))
-DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "nvidia/nvidia/nemotron-3-super-120b-a12b")
+DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "antigravity/gemini-3-flash")
 
 HERMES_MASTER_SYSTEM_PROMPT = """You are Hermes Agent, a sovereign, powerful agentic AI and deeply loyal companion.
 
@@ -313,47 +313,12 @@ class HermesAgent:
         p_lower = prompt.lower().strip()
         is_greeting_or_fast = len(p_lower.split()) <= 4 and any(g in p_lower for g in ["hi", "hello", "hey", "who are you", "what can you do", "help", "ping", "test", "thanks", "ok"])
 
-        # Prioritize live, confirmed high-performance NVIDIA NIM models and multi-provider failover
-        if is_greeting_or_fast:
-            tier_cascade = [
-                "nvidia/google/gemma-4-31b-it",
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "auto/fast",
-                "auto/smart",
-            ]
-        elif tier == "coding":
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/google/gemma-4-31b-it",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "antigravity/claude-sonnet-4-6",
-                "auto/best-coding",
-                "auto/smart",
-            ]
-        elif tier == "reasoning":
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "nvidia/google/gemma-4-31b-it",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-high",
-                "auto/best-reasoning",
-                "auto/smart",
-            ]
-        else:
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/google/gemma-4-31b-it",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "auto/best-fast",
-                "auto/smart",
-            ]
+        # Prioritize live, verified high-performance models (Gemini 3 Flash, Nemotron 3 Ultra 550B)
+        tier_cascade = [
+            "antigravity/gemini-3-flash",
+            "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+            "antigravity/gemini-3.8-flash-tiered",
+        ]
 
         for model_id in tier_cascade:
             if model_id not in candidates:
