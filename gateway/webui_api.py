@@ -258,7 +258,7 @@ def _require_access(request: Request) -> str:
             return WEBUI_PRINCIPAL
         # If requesting session endpoints from mobile client or direct API
         path = request.url.path
-        if not token or path.startswith("/api/session") or path.startswith("/api/v1/") or path.startswith("/v1/"):
+        if path.startswith("/api/session") or path.startswith("/api/v1/") or path.startswith("/v1/"):
             return "anonymous"
         raise HTTPException(status_code=401, detail="WebUI authentication required")
     if not _auth_enabled():
@@ -344,9 +344,12 @@ def _owned_session(session_id: str, owner: str) -> Dict[str, Any]:
     """Load a WebUI session and enforce its resource ownership."""
     sess = _session(session_id)
     stored_owner = sess.get("webui_owner")
-    if stored_owner is None or stored_owner == "anonymous" or owner == "anonymous":
+    if stored_owner is None:
         sess["webui_owner"] = owner
         session_store._save_data()
+        return sess
+    if stored_owner != owner:
+        raise HTTPException(status_code=404, detail="Session not found")
     return sess
 
 

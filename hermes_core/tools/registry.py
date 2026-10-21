@@ -74,6 +74,12 @@ class ToolRegistry:
         if len(words) <= 3 and all(re.sub(r'[^a-z]', '', w) in trivial_greetings for w in words if re.sub(r'[^a-z]', '', w)):
             return []
 
+        # Category selection for server and coding operations
+        selected_categories = set(self._enabled_categories)
+        for keyword in ("install", "git", "clone", "push", "read", "write", "deploy"):
+            if keyword in p:
+                selected_categories.add("coding")
+
         # For all substantive queries, provide full autonomous access across all enabled categories
         result = []
         for cat in ["vault", "coding", "files", "web", "memory", "system"]:

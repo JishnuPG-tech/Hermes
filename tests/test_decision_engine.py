@@ -7,7 +7,14 @@ from hermes_core.decision_engine import (
     PlanStep,
     StructuredPlan,
     StructuredPlanGenerator,
+    AutonomousTaskController,
+    TaskLifecycleState,
+    TaskStateMachine,
+    InvalidStateTransition,
+    TaskClassifier,
+    TaskCategory,
 )
+from hermes_core.tools.skill_tools import list_skills, read_skill_documentation
 
 
 class AutonomyPolicyTests(unittest.TestCase):
@@ -243,6 +250,117 @@ class AutonomyPolicyTests(unittest.TestCase):
         self.assertIsNotNone(res)
         self.assertEqual(res.status, "failed")
         self.assertFalse(plan.is_complete)
+
+
+    def test_state_machine_valid_and_invalid_transitions(self):
+        sm = TaskStateMachine(TaskLifecycleState.NEW)
+        self.assertEqual(sm.state, TaskLifecycleState.NEW)
+        sm.transition(TaskLifecycleState.CLASSIFYING, "Classifying prompt")
+        sm.transition(TaskLifecycleState.PLANNING, "Generating plan")
+        sm.transition(TaskLifecycleState.READY, "Plan ready")
+        sm.transition(TaskLifecycleState.EXECUTING, "Model executing")
+        sm.transition(TaskLifecycleState.VERIFYING, "Checking proof")
+        sm.transition(TaskLifecycleState.COMPLETED, "Verified complete")
+        self.assertEqual(sm.state, TaskLifecycleState.COMPLETED)
+
+        # Transitioning out of terminal state must raise InvalidStateTransition
+        with self.assertRaises(InvalidStateTransition):
+            sm.transition(TaskLifecycleState.READY)
+
+    def test_task_controller_stalled_announcement_triggers_deterministic_step(self):
+        prompt = "Build a launch video for SmartWatt using the brag skill"
+        available_tools = {"read_skill_documentation", "list_directory", "bash_exec"}
+        controller = AutonomousTaskController(prompt, available_tools)
+
+        self.assertEqual(controller.classification.category, TaskCategory.ACTION_EXECUTION)
+        self.assertIsNotNone(controller.plan)
+        first_step = controller.plan.next_ready_step()
+        self.assertEqual(first_step.id, "discover_skill")
+
+        # Model stalls with announcement instead of tool call
+        announcement = "Let me grab the brag skill references and then dive straight into building the SmartWatt video!"
+        decision = controller.evaluate_model_turn(
+            raw_text=announcement,
+            has_tool_calls=False,
+            gathered_data_blocks=[],
+            stall_attempts=0,
+        )
+
+        self.assertEqual(decision.kind, "EXECUTE_DETERMINISTIC_STEP")
+        self.assertEqual(decision.tool, "read_skill_documentation")
+        self.assertEqual(decision.arguments, {"skill_name": "brag"})
+
+    def test_task_controller_recovers_with_directive_when_step_has_no_fixed_arguments(self):
+        prompt = "Build a launch video for SmartWatt using the brag skill"
+        controller = AutonomousTaskController(prompt, {"bash_exec", "read_skill_documentation", "list_directory"})
+
+        # Satisfy steps 1 & 2
+        controller.plan.advance_with_evidence("read_skill_documentation", {"skill_name": "brag"}, "Skill instructions loaded")
+        controller.plan.advance_with_evidence("list_directory", {"path": "."}, "file1.png\nfile2.mp4")
+        self.assertEqual(controller.plan.next_ready_step().id, "execute_render")
+
+        # Model stalls on render step without tool call
+        announcement = "Now I will create the rendering script and generate the video."
+        decision = controller.evaluate_model_turn(
+            raw_text=announcement,
+            has_tool_calls=False,
+            gathered_data_blocks=["Skill loaded", "Files inspected"],
+            stall_attempts=0,
+        )
+
+        self.assertEqual(decision.kind, "RETRY_WITH_DIRECTIVE")
+        directive = AutonomyPolicy.plan_step_directive(
+            controller.plan,
+            controller.plan.next_ready_step(),
+            announcement,
+            attempt=1,
+        )
+        self.assertIn("execute_render", directive)
+        self.assertIn("Recovery attempt 1", directive)
+
+    def test_task_controller_fallback_model_on_stall_exhaustion(self):
+        prompt = "Create a video from clips and render it to output.mp4"
+        controller = AutonomousTaskController(prompt, {"bash_exec"})
+        # Complete environment check
+        controller.plan.advance_with_evidence("bash_exec", {"command": "python -c 'import moviepy'"}, "1.0.3")
+
+        # Stall attempts reaches max retries (2)
+        decision = controller.evaluate_model_turn(
+            raw_text="Let me check the video clips next.",
+            has_tool_calls=False,
+            gathered_data_blocks=["[bash_exec (python -c 'import moviepy')]:\n1.0.3"],
+            stall_attempts=2,
+        )
+        self.assertEqual(decision.kind, "FALLBACK_MODEL")
+
+    def test_stage2_synthesis_gatekeeper_blocks_unverified_action_task(self):
+        prompt = "Render a promotional video to promo.mp4"
+        controller = AutonomousTaskController(prompt, {"bash_exec"})
+        evidence = ["[bash_exec (python -c 'import moviepy')]:\n1.0.3"]
+        final_text = "MoviePy 1.0.3 is installed."
+
+        # Even if model produced text, cannot complete because goal is not verified
+        self.assertFalse(controller.can_complete(final_text, evidence))
+
+    def test_informational_query_allowed_to_complete_without_tools(self):
+        prompt = "What is MoviePy and how does it compare to ffmpeg?"
+        controller = AutonomousTaskController(prompt, set())
+        self.assertEqual(controller.classification.category, TaskCategory.INFORMATIONAL)
+        self.assertFalse(controller.classification.requires_tools)
+
+        final_text = "MoviePy is an open-source Python library for video editing."
+        self.assertTrue(controller.can_complete(final_text, []))
+
+        decision = controller.evaluate_model_turn(final_text, has_tool_calls=False, gathered_data_blocks=[], stall_attempts=0)
+        self.assertEqual(decision.kind, "COMPLETE")
+
+    def test_skill_tools_discovery_and_reading(self):
+        import asyncio
+        skills_output = asyncio.run(list_skills())
+        self.assertIn("brag", skills_output)
+        doc = asyncio.run(read_skill_documentation("brag"))
+        self.assertIn("SKILL.md", doc)
+        self.assertIn("video", doc.lower())
 
 
 if __name__ == "__main__":

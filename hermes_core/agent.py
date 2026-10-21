@@ -9,7 +9,14 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
-from hermes_core.decision_engine import AutonomyPolicy, GoalVerifier, StructuredPlanGenerator, MAX_STALL_RETRIES
+from hermes_core.decision_engine import (
+    AutonomyPolicy,
+    GoalVerifier,
+    StructuredPlanGenerator,
+    AutonomousTaskController,
+    TaskLifecycleState,
+    MAX_STALL_RETRIES,
+)
 
 logger = logging.getLogger("HermesAgent")
 
@@ -432,28 +439,26 @@ class HermesAgent:
         # Keep the latest conversation state when switching model candidates.
         working_messages = list(payload_messages)
         working_data_blocks = []
-        # Plan generation is deterministic and side-effect free. The current
-        # model loop uses the plan to frame recovery directives; tool execution
-        # and evidence remain owned by the existing registry.
-        task_plan = (
-            StructuredPlanGenerator.generate_plan(last_user_msg)
-            if tools and AutonomyPolicy.is_action_oriented_task(last_user_msg)
-            else None
+        # Authoritative AutonomousTaskController enforces formal task lifecycle
+        task_controller = AutonomousTaskController(
+            prompt=last_user_msg,
+            available_tools=known_tools if enable_dynamic_tools and not has_images else set(),
         )
+        task_plan = task_controller.plan
         plan_context = ""
         if task_plan:
             plan_context = (
-                "\\n\\n[HERMES EXECUTION PLAN - NOT YET COMPLETED]\\n"
-                f"Goal: {task_plan.goal}\\n"
+                "\n\n[HERMES EXECUTION PLAN - NOT YET COMPLETED]\n"
+                f"Goal: {task_plan.goal}\n"
                 "Complete each dependent step in order, recording actual results. "
                 "Do not mark an unexecuted step as complete. The plan is guidance; "
-                "choose the registered tool and arguments based on current evidence.\\n"
-                + "\\n".join(
+                "choose the registered tool and arguments based on current evidence.\n"
+                + "\n".join(
                     f"{index + 1}. [{step.id}] {step.action} "
                     f"(success criteria: {step.success_criteria or 'verify the result'})"
                     for index, step in enumerate(task_plan.steps)
                 )
-                + "\\nA progress announcement is not task completion."
+                + "\nA progress announcement is not task completion."
             )
             payload_messages[0]["content"] += plan_context
             working_messages = list(payload_messages)
@@ -580,231 +585,172 @@ class HermesAgent:
                                 unique_calls.append(tc)
 
                         if not unique_calls:
-                            # Progress text alone does not complete an action-oriented task.
-                            if (
-                                tools
-                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
-                                and (
-                                    AutonomyPolicy.is_unfulfilled_action_announcement(
-                                        raw_text_accum, has_tool_calls=False
-                                    )
-                                    or not gathered_data_blocks
-                                    or (
-                                        GoalVerifier.evaluate(
-                                            last_user_msg, gathered_data_blocks, raw_text_accum
-                                        ).is_verified is False
-                                    )
-                                )
-                            ):
-                                if premature_stall_retries < MAX_STALL_RETRIES:
-                                    premature_stall_retries += 1
-                                    current_messages.append({
-                                        "role": "assistant",
-                                        "content": raw_text_accum,
-                                    })
-                                    current_messages.append({
-                                        "role": "user",
-                                        "content": (
-                                            AutonomyPolicy.partial_goal_directive(
-                                                last_user_msg,
-                                                gathered_data_blocks,
-                                                raw_text_accum,
-                                                GoalVerifier.evaluate(
-                                                    last_user_msg, gathered_data_blocks, raw_text_accum
-                                                ).missing_aspect or "No executable step was produced",
-                                                premature_stall_retries,
-                                            )
-                                            if gathered_data_blocks
-                                            else AutonomyPolicy.recovery_directive(
-                                                last_user_msg,
-                                                raw_text_accum,
-                                                premature_stall_retries,
-                                            )
-                                        ),
-                                    })
-                                    working_messages = list(current_messages)
-                                    yield {
-                                        "type": "thinking",
-                                        "content": (
-                                            "Decision Engine: action announcement detected "
-                                            f"without a tool call; retrying "
-                                            f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
-                                        ),
-                                    }
-                                    continue
-
-                                candidate_requires_fallback = True
-                                last_error = (
-                                    f"Model {candidate} repeatedly announced an action "
-                                    "without producing a tool call."
-                                )
-                                yield {
-                                    "type": "thinking",
-                                    "content": "Trying the next model with the saved task context.\n",
-                                }
-                                break
-
                             p_lower = last_user_msg.lower()
                             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', last_user_msg)
                             
-                            # 1. Proactive URL Scraping
-                            if urls and "fetch_webpage" in known_tools and not gathered_data_blocks:
-                                for target_url in urls[:2]:
-                                    domain = target_url.split("//")[-1].split("/")[0]
-                                    yield {"type": "thinking", "content": f"Fetching {domain}...\n"}
-                                    page_content = await registry.execute_tool("fetch_webpage", {"url": target_url})
-                                    gathered_data_blocks.append(f"[fetch_webpage ({target_url})]:\n{page_content}")
-                                    yield {"type": "thinking", "content": f"Reading {domain} output...\n"}
+                            # Proactive tools run on step 0 if no tools run yet
+                            if step == 0 and not gathered_data_blocks:
+                                # 1. Proactive URL Scraping
+                                if urls and "fetch_webpage" in known_tools:
+                                    for target_url in urls[:2]:
+                                        domain = target_url.split("//")[-1].split("/")[0]
+                                        yield {"type": "thinking", "content": f"Fetching {domain}...\n"}
+                                        page_content = await registry.execute_tool("fetch_webpage", {"url": target_url})
+                                        gathered_data_blocks.append(f"[fetch_webpage ({target_url})]:\n{page_content}")
+                                        yield {"type": "thinking", "content": f"Reading {domain} output...\n"}
 
-                            # 2. Proactive Web Search for Research & Current Topics
-                            research_keywords = [
-                                "research", "investigate", "find information", "search", "who is", "what is",
-                                "leak", "leaks", "tell me about", "latest news", "cyberleek", "cyber", "internet",
-                                "sources", "check online"
-                            ]
-                            has_research_intent = any(k in p_lower for k in research_keywords)
-                            if step == 0 and has_research_intent and "web_search" in known_tools and not gathered_data_blocks:
-                                clean_query = re.sub(r'^(?:please\s+|can\s+you\s+|research\s+about\s+|search\s+for\s+|investigate\s+)', '', last_user_msg, flags=re.I).strip()
-                                if not clean_query:
-                                    clean_query = last_user_msg
-                                q_short = clean_query[:32] + ("..." if len(clean_query) > 32 else "")
-                                yield {"type": "thinking", "content": f"Searching the web for {q_short}...\n"}
-                                result_str = await registry.execute_tool("web_search", {"query": clean_query})
-                                gathered_data_blocks.append(f"[web_search ({clean_query})]:\n{result_str}")
-                                yield {"type": "thinking", "content": "Reading search results...\n"}
+                                # 2. Proactive Web Search for Research & Current Topics
+                                research_keywords = [
+                                    "research", "investigate", "find information", "search", "who is", "what is",
+                                    "leak", "leaks", "tell me about", "latest news", "cyberleek", "cyber", "internet",
+                                    "sources", "check online"
+                                ]
+                                has_research_intent = any(k in p_lower for k in research_keywords)
+                                if has_research_intent and "web_search" in known_tools:
+                                    clean_query = re.sub(r'^(?:please\s+|can\s+you\s+|research\s+about\s+|search\s+for\s+|investigate\s+)', '', last_user_msg, flags=re.I).strip()
+                                    if not clean_query:
+                                        clean_query = last_user_msg
+                                    q_short = clean_query[:32] + ("..." if len(clean_query) > 32 else "")
+                                    yield {"type": "thinking", "content": f"Searching the web for {q_short}...\n"}
+                                    result_str = await registry.execute_tool("web_search", {"query": clean_query})
+                                    gathered_data_blocks.append(f"[web_search ({clean_query})]:\n{result_str}")
+                                    yield {"type": "thinking", "content": "Reading search results...\n"}
 
-                            # 3. Proactive Knowledge Search across Notion (Primary) & Obsidian
-                            knowledge_keywords = [
-                                "what do i know", "project", "projects", "task", "tasks", "decision", "decisions",
-                                "plan", "plans", "roadmap", "architecture", "what did we decide", "my notes",
-                                "status of", "what are we working on", "notion", "workspace", "todo", "adr"
-                            ]
-                            has_knowledge_intent = any(k in p_lower for k in knowledge_keywords)
-                            if step == 0 and has_knowledge_intent and "search_knowledge" in known_tools and not gathered_data_blocks:
-                                yield {"type": "thinking", "content": "Querying knowledge base...\n"}
-                                k_result_str = await registry.execute_tool("search_knowledge", {"query": last_user_msg, "limit": 4})
-                                gathered_data_blocks.append(f"[search_knowledge (Notion Primary)]:\n{k_result_str}")
-                                yield {"type": "thinking", "content": "Reading knowledge records...\n"}
+                                # 3. Proactive Knowledge Search across Notion (Primary) & Obsidian
+                                knowledge_keywords = [
+                                    "what do i know", "project", "projects", "task", "tasks", "decision", "decisions",
+                                    "plan", "plans", "roadmap", "architecture", "what did we decide", "my notes",
+                                    "status of", "what are we working on", "notion", "workspace", "todo", "adr"
+                                ]
+                                has_knowledge_intent = any(k in p_lower for k in knowledge_keywords)
+                                if has_knowledge_intent and "search_knowledge" in known_tools:
+                                    yield {"type": "thinking", "content": "Querying knowledge base...\n"}
+                                    k_result_str = await registry.execute_tool("search_knowledge", {"query": last_user_msg, "limit": 4})
+                                    gathered_data_blocks.append(f"[search_knowledge (Notion Primary)]:\n{k_result_str}")
+                                    yield {"type": "thinking", "content": "Reading knowledge records...\n"}
 
-                            # 4. Proactive Server Computer & Storage status
-                            computer_keywords = ["server", "computer", "disk", "storage", "workspace", "workspaces", "system status", "diagnostics"]
-                            if step == 0 and any(k in p_lower for k in computer_keywords) and "computer_system_status" in known_tools and not any("computer_system_status" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Checking system metrics...\n"}
-                                status_str = await registry.execute_tool("computer_system_status", {})
-                                gathered_data_blocks.append(f"[computer_system_status]:\n{status_str}")
-                                yield {"type": "thinking", "content": "Reading diagnostic output...\n"}
+                                # 4. Proactive Server Computer & Storage status
+                                computer_keywords = ["server", "computer", "disk", "storage", "workspace", "workspaces", "system status", "diagnostics"]
+                                if any(k in p_lower for k in computer_keywords) and "computer_system_status" in known_tools and not any("computer_system_status" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Checking system metrics...\n"}
+                                    status_str = await registry.execute_tool("computer_system_status", {})
+                                    gathered_data_blocks.append(f"[computer_system_status]:\n{status_str}")
+                                    yield {"type": "thinking", "content": "Reading diagnostic output...\n"}
 
-                            # 5. Proactive Registered Projects list
-                            if step == 0 and any(k in p_lower for k in ["project list", "list projects", "what projects", "active projects"]) and "computer_project_list" in known_tools and not any("computer_project_list" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Inspecting registered projects...\n"}
-                                plist_str = await registry.execute_tool("computer_project_list", {})
-                                gathered_data_blocks.append(f"[computer_project_list]:\n{plist_str}")
-                                yield {"type": "thinking", "content": "Reading project records...\n"}
+                                # 5. Proactive Registered Projects list
+                                if any(k in p_lower for k in ["project list", "list projects", "what projects", "active projects"]) and "computer_project_list" in known_tools and not any("computer_project_list" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Inspecting registered projects...\n"}
+                                    plist_str = await registry.execute_tool("computer_project_list", {})
+                                    gathered_data_blocks.append(f"[computer_project_list]:\n{plist_str}")
+                                    yield {"type": "thinking", "content": "Reading project records...\n"}
 
-                            # 6. Proactive File & Directory inspection
-                            file_keywords = ["what files", "file list", "directory", "codebase", "folder structure", "check repository", "show files"]
-                            if step == 0 and any(k in p_lower for k in file_keywords) and "list_directory" in known_tools and not any("list_directory" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Running the ls command...\n"}
-                                dir_str = await registry.execute_tool("list_directory", {"path": "."})
-                                gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
-                                yield {"type": "thinking", "content": "Reading the ls output...\n"}
+                                # 6. Proactive File & Directory inspection
+                                file_keywords = ["what files", "file list", "directory", "codebase", "folder structure", "check repository", "show files"]
+                                if any(k in p_lower for k in file_keywords) and "list_directory" in known_tools and not any("list_directory" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Running the ls command...\n"}
+                                    dir_str = await registry.execute_tool("list_directory", {"path": "."})
+                                    gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
+                                    yield {"type": "thinking", "content": "Reading the ls output...\n"}
 
-                            if (
-                                tools
-                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
-                                and not gathered_data_blocks
-                            ):
-                                if premature_stall_retries < MAX_STALL_RETRIES:
-                                    premature_stall_retries += 1
-                                    current_messages.extend([
-                                        {"role": "assistant", "content": raw_text_accum},
+                            # Evaluate turn through the authoritative AutonomousTaskController
+                            turn_decision = task_controller.evaluate_model_turn(
+                                raw_text=raw_text_accum,
+                                has_tool_calls=False,
+                                gathered_data_blocks=gathered_data_blocks,
+                                stall_attempts=premature_stall_retries,
+                            )
+
+                            if turn_decision.kind == "EXECUTE_DETERMINISTIC_STEP" and turn_decision.tool:
+                                det_tool = turn_decision.tool
+                                det_args = turn_decision.arguments or {}
+                                next_step = task_plan.next_ready_step() if task_plan else None
+                                step_desc = f"[{next_step.id}] '{next_step.action}'" if next_step else det_tool
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: autonomously executing plan step {step_desc}...\n",
+                                }
+                                det_result = await registry.execute_tool(det_tool, det_args)
+                                q_desc = det_args.get("command") or det_args.get("query") or det_args.get("skill_name") or det_tool
+                                gathered_data_blocks.append(f"[{det_tool} ({q_desc})]:\n{det_result}")
+                                if task_plan:
+                                    task_plan.advance_with_evidence(det_tool, det_args, det_result)
+
+                                call_id = f"call_det_{step}_{int(time.time() * 1000) % 10000}"
+                                current_messages.append({
+                                    "role": "assistant",
+                                    "content": raw_text_accum or f"Executing {det_tool}",
+                                    "tool_calls": [
                                         {
-                                            "role": "user",
-                                            "content": AutonomyPolicy.recovery_directive(
-                                                last_user_msg, raw_text_accum,
-                                                premature_stall_retries,
-                                            ),
-                                        },
-                                    ])
-                                    working_messages = list(current_messages)
-                                    yield {
-                                        "type": "thinking",
-                                        "content": "Decision Engine: continuing the unfinished task.\n",
-                                    }
-                                    continue
-                                candidate_requires_fallback = True
-                                last_error = "No tool result was produced for the requested action."
-                                break
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": det_tool,
+                                                "arguments": json.dumps(det_args, ensure_ascii=False),
+                                            },
+                                        }
+                                    ],
+                                })
+                                current_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "name": det_tool,
+                                    "content": det_result,
+                                })
+                                working_messages = list(current_messages)
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: step completed with live result, continuing execution.\n",
+                                }
+                                continue
 
-                            # Goal-Level Verifier: verify terminal objective before exiting multi-step operational tasks
-                            if (
-                                tools
-                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
-                                and gathered_data_blocks
-                            ):
+                            elif turn_decision.kind == "RETRY_WITH_DIRECTIVE":
+                                premature_stall_retries += 1
+                                directive_text = ""
                                 if task_plan and not task_plan.is_complete:
                                     next_step = task_plan.next_ready_step()
-                                    if next_step and premature_stall_retries < MAX_STALL_RETRIES:
-                                        premature_stall_retries += 1
-                                        current_messages.extend([
-                                            {"role": "assistant", "content": raw_text_accum},
-                                            {
-                                                "role": "user",
-                                                "content": AutonomyPolicy.plan_step_directive(
-                                                    task_plan,
-                                                    next_step,
-                                                    raw_text_accum,
-                                                    premature_stall_retries,
-                                                ),
-                                            },
-                                        ])
-                                        working_messages = list(current_messages)
-                                        yield {
-                                            "type": "thinking",
-                                            "content": (
-                                                f"Decision Engine: advancing to plan step [{next_step.id}] '{next_step.action}' "
-                                                f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
-                                            ),
-                                        }
-                                        continue
+                                    if next_step:
+                                        directive_text = AutonomyPolicy.plan_step_directive(
+                                            task_plan, next_step, raw_text_accum, premature_stall_retries
+                                        )
+                                if not directive_text:
+                                    verification = GoalVerifier.evaluate(last_user_msg, gathered_data_blocks, raw_text_accum)
+                                    if gathered_data_blocks and not verification.is_verified:
+                                        directive_text = AutonomyPolicy.partial_goal_directive(
+                                            last_user_msg, gathered_data_blocks, raw_text_accum,
+                                            verification.missing_aspect or "Goal incomplete",
+                                            premature_stall_retries
+                                        )
+                                    else:
+                                        directive_text = AutonomyPolicy.recovery_directive(
+                                            last_user_msg, raw_text_accum, premature_stall_retries
+                                        )
 
-                                verification = GoalVerifier.evaluate(
-                                    last_user_msg, gathered_data_blocks, raw_text_accum
+                                current_messages.append({"role": "assistant", "content": raw_text_accum})
+                                current_messages.append({"role": "user", "content": directive_text})
+                                working_messages = list(current_messages)
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: action announcement detected without a tool call; retrying ({premature_stall_retries}/{MAX_STALL_RETRIES}).\n",
+                                }
+                                continue
+
+                            elif turn_decision.kind == "FALLBACK_MODEL":
+                                candidate_requires_fallback = True
+                                last_error = (
+                                    f"Model {candidate} stalled on action task without tool calls "
+                                    f"after {premature_stall_retries} attempts."
                                 )
-                                if not verification.is_verified:
-                                    if premature_stall_retries < MAX_STALL_RETRIES:
-                                        premature_stall_retries += 1
-                                        current_messages.extend([
-                                            {"role": "assistant", "content": raw_text_accum},
-                                            {
-                                                "role": "user",
-                                                "content": AutonomyPolicy.partial_goal_directive(
-                                                    last_user_msg,
-                                                    gathered_data_blocks,
-                                                    raw_text_accum,
-                                                    verification.missing_aspect,
-                                                    premature_stall_retries,
-                                                ),
-                                            },
-                                        ])
-                                        working_messages = list(current_messages)
-                                        yield {
-                                            "type": "thinking",
-                                            "content": (
-                                                f"Decision Engine: goal incomplete ({verification.missing_aspect}); "
-                                                f"continuing autonomous execution ({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
-                                            ),
-                                        }
-                                        continue
-                                    candidate_requires_fallback = True
-                                    last_error = f"Goal incomplete: {verification.missing_aspect}"
-                                    yield {
-                                        "type": "thinking",
-                                        "content": "Decision Engine: switching candidate model to complete remaining steps.\n",
-                                    }
-                                    break
+                                yield {
+                                    "type": "thinking",
+                                    "content": "Decision Engine: stall limit reached; switching model candidate while preserving progress.\n",
+                                }
+                                break
 
-                            break
+                            elif turn_decision.kind == "COMPLETE":
+                                break
+
+                            else:
+                                break
 
                         tool_results = []
                         for tc in unique_calls:
@@ -871,6 +817,17 @@ class HermesAgent:
                     continue
 
                 # Stage 2: Guaranteed Direct Synthesis Stream (WITHOUT TOOLS)
+                # Gatekeeper: Action tasks MUST have verified completion before entering Stage 2 synthesis!
+                if task_controller.classification.requires_tools:
+                    if not task_controller.can_complete(raw_text_accum if 'raw_text_accum' in locals() else "", gathered_data_blocks):
+                        verification = GoalVerifier.evaluate(last_user_msg, gathered_data_blocks, raw_text_accum if 'raw_text_accum' in locals() else "")
+                        last_error = f"Goal verification not satisfied: {verification.missing_aspect}"
+                        candidate_requires_fallback = True
+                        yield {
+                            "type": "thinking",
+                            "content": f"Decision Engine: cannot synthesize ({last_error}); switching candidate model.\n",
+                        }
+                        continue
                 p_lower = last_user_msg.lower()
                 is_coding = any(k in p_lower for k in ["write code", "implement", "script", "function", "algorithm", "debug", "refactor", "create a program", "fastapi", "react", "python code", "flutter", "kotlin"])
                 is_analysis = any(k in p_lower for k in ["calculate", "math", "equation", "solve", "formula", "data analysis", "statistics", "integral", "derivative", "matrix"])
@@ -1035,6 +992,9 @@ class HermesAgent:
                             continue
 
                 if stream_succeeded:
+                    if task_controller.classification.requires_tools:
+                        if task_controller.state_machine.can_transition(TaskLifecycleState.COMPLETED):
+                            task_controller.state_machine.transition(TaskLifecycleState.COMPLETED, "Autonomous execution verified and synthesized")
                     # Autonomous Decision / Milestone Persistence to Notion
                     p_lower = last_user_msg.lower()
                     if any(k in p_lower for k in ["decision", "decide", "architect", "architecture", "adr", "milestone"]):
@@ -1078,15 +1038,17 @@ class HermesAgent:
                 continue
 
         if not stream_succeeded:
+            task_controller.mark_blocked(last_error or "Exhausted candidate models without goal verification")
             # Sovereign Local Intelligence Fallback: NEVER crash with an error to the user!
             if gathered_data_blocks:
                 tool_output_joined = "\n\n".join(gathered_data_blocks)
                 if AutonomyPolicy.is_action_oriented_task(last_user_msg):
                     fallback_msg = (
-                        f"Partial execution evidence for the requested task: {last_user_msg!r}\n\n"
-                        f"{tool_output_joined}\n\n"
-                        "I could not verify that the complete goal was achieved. "
-                        f"Last runtime error: {last_error or 'No final verification was returned.'}"
+                        f"Task Execution Summary for: {last_user_msg!r}\n\n"
+                        f"Status: INCOMPLETE / BLOCKED\n\n"
+                        f"Evidence Gathered from Server:\n{tool_output_joined}\n\n"
+                        f"Missing Verification: {last_error or 'The requested operational action was not completely verified on disk/server.'}\n\n"
+                        "I have halted safely without falsely claiming completion. You can review the intermediate outputs above."
                     )
                 else:
                     fallback_msg = (

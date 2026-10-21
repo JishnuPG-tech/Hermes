@@ -242,7 +242,11 @@ class WebUIRuntimeRegressionTests(unittest.TestCase):
         outside = Path(_TEMP_ROOT.name) / "outside.txt"
         outside.write_text("secret", encoding="utf-8")
         (_WORKSPACE / "inside.txt").write_text("safe", encoding="utf-8")
-        (_WORKSPACE / "link.txt").symlink_to(outside)
+        has_symlink = True
+        try:
+            (_WORKSPACE / "link.txt").symlink_to(outside)
+        except OSError:
+            has_symlink = False
 
         traversal = self.client.get(
             "/api/file",
@@ -254,11 +258,12 @@ class WebUIRuntimeRegressionTests(unittest.TestCase):
             params={"session_id": session_id, "path": str(outside)},
         )
         self.assertEqual(absolute.status_code, 400)
-        escaped = self.client.get(
-            "/api/file",
-            params={"session_id": session_id, "path": "link.txt"},
-        )
-        self.assertEqual(escaped.status_code, 403)
+        if has_symlink:
+            escaped = self.client.get(
+                "/api/file",
+                params={"session_id": session_id, "path": "link.txt"},
+            )
+            self.assertEqual(escaped.status_code, 403)
         secret = self.client.get(
             "/api/file",
             params={"session_id": session_id, "path": ".env"},
