@@ -431,10 +431,11 @@ class HermesAgent:
         last_error = ""
         # Keep the latest conversation state when switching model candidates.
         working_messages = list(payload_messages)
+        working_data_blocks = []
 
         for candidate in candidate_models:
             current_messages = list(working_messages)
-            gathered_data_blocks = []
+            gathered_data_blocks = working_data_blocks
             executed_tool_signatures = set()
             candidate_requires_fallback = False
             premature_stall_retries = 0
