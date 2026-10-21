@@ -3,8 +3,10 @@ import unittest
 from hermes_core.decision_engine import (
     ActionDecision,
     AutonomyPolicy,
+    GoalVerifier,
     PlanStep,
     StructuredPlan,
+    StructuredPlanGenerator,
 )
 
 
@@ -90,6 +92,54 @@ class AutonomyPolicyTests(unittest.TestCase):
         )
         self.assertEqual(decision.kind, "EXECUTE_TOOL")
         self.assertEqual(decision.arguments["command"], "python -V")
+
+    def test_goal_verifier_flags_inspection_only_as_unverified(self):
+        goal = "Create a video from clips and render it to output.mp4"
+        evidence = ["[bash_exec (python -c 'import moviepy; print(moviepy.__version__)')]:\n1.0.3"]
+        raw_text = "MoviePy 1.0.3 is installed on your system."
+        res = GoalVerifier.evaluate(goal, evidence, raw_text)
+        self.assertFalse(res.is_verified)
+        self.assertIn("preparatory inspection", res.missing_aspect)
+
+    def test_goal_verifier_flags_transition_intent(self):
+        goal = "Create a video from clips and render it to output.mp4"
+        evidence = ["[bash_exec (python -c 'import moviepy')]:\n1.0.3"]
+        raw_text = "Next I will create the rendering script and generate the video."
+        res = GoalVerifier.evaluate(goal, evidence, raw_text)
+        self.assertFalse(res.is_verified)
+        self.assertIn("announced the next concrete step", res.missing_aspect)
+
+    def test_goal_verifier_approves_when_rendering_succeeded(self):
+        goal = "Create a video from clips and render it to output.mp4"
+        evidence = [
+            "[bash_exec (python -c 'import moviepy')]:\n1.0.3",
+            "[bash_exec (python render.py)]:\nRendering video...\nVideo successfully rendered to output.mp4\nexit code: 0",
+        ]
+        raw_text = "The video has been rendered and verified successfully at output.mp4."
+        res = GoalVerifier.evaluate(goal, evidence, raw_text)
+        self.assertTrue(res.is_verified)
+
+    def test_goal_verifier_approves_informational_task(self):
+        res = GoalVerifier.evaluate("What is MoviePy?", [], "MoviePy is a library.")
+        self.assertTrue(res.is_verified)
+
+    def test_structured_plan_generator_for_video(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
+        step_ids = [s.id for s in plan.steps]
+        self.assertEqual(step_ids, ["inspect_env", "execute_render", "verify_output"])
+        self.assertIn("inspect_env", plan.steps[1].depends_on)
+
+    def test_partial_goal_directive_formatting(self):
+        directive = AutonomyPolicy.partial_goal_directive(
+            prompt="Build a video",
+            gathered_data_blocks=["[bash_exec (python -V)]:\nPython 3.11.9"],
+            previous_response="I checked Python.",
+            missing_aspect="Core creation step not executed",
+            attempt=1,
+        )
+        self.assertIn("Status: Core creation step not executed", directive)
+        self.assertIn("Original goal: Build a video", directive)
+        self.assertIn("Recovery attempt 1", directive)
 
 
 if __name__ == "__main__":

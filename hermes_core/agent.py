@@ -9,7 +9,7 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
-from hermes_core.decision_engine import AutonomyPolicy, MAX_STALL_RETRIES
+from hermes_core.decision_engine import AutonomyPolicy, GoalVerifier, StructuredPlanGenerator, MAX_STALL_RETRIES
 
 logger = logging.getLogger("HermesAgent")
 
@@ -693,6 +693,48 @@ class HermesAgent:
                                 candidate_requires_fallback = True
                                 last_error = "No tool result was produced for the requested action."
                                 break
+
+                            # Goal-Level Verifier: verify terminal objective before exiting multi-step operational tasks
+                            if (
+                                tools
+                                and AutonomyPolicy.is_action_oriented_task(last_user_msg)
+                                and gathered_data_blocks
+                            ):
+                                verification = GoalVerifier.evaluate(
+                                    last_user_msg, gathered_data_blocks, raw_text_accum
+                                )
+                                if not verification.is_verified:
+                                    if premature_stall_retries < MAX_STALL_RETRIES:
+                                        premature_stall_retries += 1
+                                        current_messages.extend([
+                                            {"role": "assistant", "content": raw_text_accum},
+                                            {
+                                                "role": "user",
+                                                "content": AutonomyPolicy.partial_goal_directive(
+                                                    last_user_msg,
+                                                    gathered_data_blocks,
+                                                    raw_text_accum,
+                                                    verification.missing_aspect,
+                                                    premature_stall_retries,
+                                                ),
+                                            },
+                                        ])
+                                        working_messages = list(current_messages)
+                                        yield {
+                                            "type": "thinking",
+                                            "content": (
+                                                f"Decision Engine: goal incomplete ({verification.missing_aspect}); "
+                                                f"continuing autonomous execution ({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
+                                            ),
+                                        }
+                                        continue
+                                    candidate_requires_fallback = True
+                                    last_error = f"Goal incomplete: {verification.missing_aspect}"
+                                    yield {
+                                        "type": "thinking",
+                                        "content": "Decision Engine: switching candidate model to complete remaining steps.\n",
+                                    }
+                                    break
 
                             break
 
