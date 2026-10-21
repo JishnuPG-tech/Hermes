@@ -583,7 +583,7 @@ class HermesAgent:
                                         "content": (
                                             "Decision Engine: action announcement detected "
                                             f"without a tool call; retrying "
-                                            f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\\n"
+                                            f"({premature_stall_retries}/{MAX_STALL_RETRIES}).\n"
                                         ),
                                     }
                                     continue
@@ -595,7 +595,7 @@ class HermesAgent:
                                 )
                                 yield {
                                     "type": "thinking",
-                                    "content": "Trying the next model with the saved task context.\\n",
+                                    "content": "Trying the next model with the saved task context.\n",
                                 }
                                 break
 
@@ -684,7 +684,7 @@ class HermesAgent:
                                     working_messages = list(current_messages)
                                     yield {
                                         "type": "thinking",
-                                        "content": "Decision Engine: continuing the unfinished task.\\n",
+                                        "content": "Decision Engine: continuing the unfinished task.\n",
                                     }
                                     continue
                                 candidate_requires_fallback = True
@@ -749,7 +749,7 @@ class HermesAgent:
                         )
                         yield {
                             "type": "thinking",
-                            "content": "Decision Engine: switching model to continue the task.\\n",
+                            "content": "Decision Engine: switching model to continue the task.\n",
                         }
 
                 if candidate_requires_fallback:
