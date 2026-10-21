@@ -478,6 +478,12 @@ class HermesAgent:
 
                         async with self.http_client.stream("POST", "/chat/completions", json=req_body, timeout=httpx.Timeout(45.0, connect=4.0)) as response:
                             if response.status_code != 200:
+                                err_text = await response.aread()
+                                last_error = (
+                                    f"Tool-loop upstream {candidate} ({response.status_code}): "
+                                    f"{err_text.decode('utf-8', errors='ignore')}"
+                                )
+                                candidate_requires_fallback = True
                                 break
 
                             async for line in response.aiter_lines():
