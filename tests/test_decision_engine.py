@@ -198,5 +198,52 @@ class AutonomyPolicyTests(unittest.TestCase):
         self.assertIn("Recovery attempt 1", directive)
 
 
+    def test_advance_with_evidence_rejects_unrelated_command(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
+        # Step 1: complete inspect_env
+        plan.advance_with_evidence("bash_exec", {"command": "python3 -c 'import moviepy'"}, "1.0.3")
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+
+        # Attempt to satisfy execute_render with a harmless whoami or ls command
+        res = plan.advance_with_evidence("bash_exec", {"command": "whoami"}, "root")
+        self.assertIsNone(res)
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+        self.assertEqual(plan.next_ready_step().status, "pending")
+
+    def test_advance_with_evidence_rejects_inspection_command_for_render(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
+        plan.advance_with_evidence("bash_exec", {"command": "python3 -c 'import moviepy'"}, "1.0.3")
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+
+        # Repeating an import check should NOT advance execute_render
+        res = plan.advance_with_evidence("bash_exec", {"command": "python -c 'import moviepy'"}, "1.0.3")
+        self.assertIsNone(res)
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+        self.assertEqual(plan.next_ready_step().status, "pending")
+
+    def test_advance_with_evidence_detects_exit_code_failure(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
+        plan.advance_with_evidence("bash_exec", {"command": "python3 -c 'import moviepy'"}, "1.0.3")
+        self.assertEqual(plan.next_ready_step().id, "execute_render")
+
+        # Render command fails with exit code 1
+        res = plan.advance_with_evidence("bash_exec", {"command": "python render.py"}, "Traceback: Render failed\n[EXIT CODE: 1]")
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status, "failed")
+        self.assertIn("failed", res.evidence)
+
+    def test_advance_with_evidence_detects_missing_artifact_in_verification(self):
+        plan = StructuredPlanGenerator.generate_plan("Create a video with MoviePy")
+        plan.advance_with_evidence("bash_exec", {"command": "python3 -c 'import moviepy'"}, "1.0.3")
+        plan.advance_with_evidence("bash_exec", {"command": "python render.py"}, "Rendering complete exit code: 0")
+        self.assertEqual(plan.next_ready_step().id, "verify_output")
+
+        # Verify command output states file does not exist
+        res = plan.advance_with_evidence("bash_exec", {"command": "ls -l output.mp4"}, "ls: cannot access 'output.mp4': No such file or directory")
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status, "failed")
+        self.assertFalse(plan.is_complete)
+
+
 if __name__ == "__main__":
     unittest.main()

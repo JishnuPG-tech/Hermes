@@ -46,20 +46,105 @@ class StructuredPlan:
     def is_complete(self) -> bool:
         return bool(self.steps) and all(step.status == "completed" for step in self.steps)
 
+    @staticmethod
+    def _is_tool_relevant_to_step(step: PlanStep, tool_name: str, command: str, output: str) -> bool:
+        """Validate whether the executed command actually corresponds to the step's intent."""
+        cmd_lower = command.lower().strip()
+        step_id = step.id.lower()
+
+        # Step 1: Environment / Dependency inspection
+        if any(w in step_id for w in ["inspect", "check", "env"]):
+            inspection_indicators = (
+                "python", "pip", "node", "npm", "which", "where",
+                "version", "-v", "--version", "import", "status", "ls", "find"
+            )
+            return any(ind in cmd_lower for ind in inspection_indicators) or tool_name in ("list_directory", "read_file")
+
+        # Step 2: Operational execution / Render / Build / Run
+        if any(w in step_id for w in ["render", "execute", "build", "run"]):
+            # Must NOT be a simple read-only command or basic diagnostic echo
+            pure_read_only = (
+                cmd_lower.startswith("echo ") or
+                cmd_lower.startswith("whoami") or
+                cmd_lower.startswith("pwd") or
+                cmd_lower.startswith("which ") or
+                cmd_lower.startswith("cat ") or
+                (cmd_lower.startswith("python") and "-c 'import" in cmd_lower) or
+                (cmd_lower.startswith("python") and '-c "import' in cmd_lower) or
+                cmd_lower in ("ls", "dir", "git status")
+            )
+            if pure_read_only:
+                return False
+
+            execution_cues = ("python", "render", "ffmpeg", "build", "make", "compile", "run", "node", "bash", "git", "sh")
+            return any(cue in cmd_lower for cue in execution_cues) or tool_name in ("python_exec", "bash_exec")
+
+        # Step 3: Verification / Output validation
+        if any(w in step_id for w in ["verify", "output", "validate"]):
+            verification_cues = (
+                "ls", "test -f", "test -e", "stat", "file ", "ffprobe", "dir",
+                "os.path", "exists", "grep", "cat", "git log", "git status"
+            )
+            return any(cue in cmd_lower for cue in verification_cues) or tool_name in ("list_directory", "read_file")
+
+        # Default fallback: check tool name
+        if step.tool and step.tool != tool_name:
+            return False
+        return True
+
     def advance_with_evidence(self, tool_name: str, tool_args: Dict[str, Any], tool_output: str) -> Optional[PlanStep]:
         """Correlate tool output with the current ready step and advance if satisfied."""
         step = self.next_ready_step()
         if not step:
             return None
 
-        error_indicators = ("command not found", "traceback (most recent call last)", "syntaxerror:", "exit code: 1", "exit code: 2")
-        is_error = any(err in tool_output.lower() for err in error_indicators)
+        command = str(tool_args.get("command") or tool_args.get("query") or "").strip()
 
-        step.evidence = tool_output[:500] if tool_output else "Executed"
-        if not is_error:
-            step.status = "completed"
+        # 1. Validate that the executed tool and command actually correspond to the step
+        if not self._is_tool_relevant_to_step(step, tool_name, command, tool_output):
+            return None
+
+        # 2. Check for explicit non-zero exit codes
+        exit_code = None
+        m_code = re.search(r"\[EXIT CODE:\s*(\d+)\]", tool_output, re.IGNORECASE)
+        if m_code:
+            exit_code = int(m_code.group(1))
         else:
+            m_ret = re.search(r'"returncode":\s*(\d+)', tool_output, re.IGNORECASE)
+            if m_ret:
+                exit_code = int(m_ret.group(1))
+
+        # Check for error indicators in output
+        error_indicators = (
+            "command not found",
+            "traceback (most recent call last)",
+            "syntaxerror:",
+            "fatal error",
+            "no such file or directory",
+            "cannot find module",
+            "failed to render",
+            "exit code: 1",
+            "exit code: 2",
+            "exit code: 127",
+        )
+        has_error_text = any(err in tool_output.lower() for err in error_indicators)
+
+        if (exit_code is not None and exit_code != 0) or has_error_text:
             step.status = "failed"
+            step.evidence = f"Step failed: {tool_output[:400]}"
+            return step
+
+        # 3. For verification steps, ensure output actually confirms the artifact exists
+        if "verify" in step.id.lower():
+            missing_indicators = ("not found", "no such file", "cannot access", "0 bytes", "empty file")
+            if any(m in tool_output.lower() for m in missing_indicators):
+                step.status = "failed"
+                step.evidence = f"Artifact verification failed: {tool_output[:400]}"
+                return step
+
+        # Step successfully completed
+        step.status = "completed"
+        step.evidence = tool_output[:500] if tool_output else "Executed successfully"
         return step
 
     def to_dict(self) -> Dict[str, Any]:
