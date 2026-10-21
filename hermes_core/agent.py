@@ -589,6 +589,11 @@ class HermesAgent:
                                         raw_text_accum, has_tool_calls=False
                                     )
                                     or not gathered_data_blocks
+                                    or (
+                                        GoalVerifier.evaluate(
+                                            last_user_msg, gathered_data_blocks, raw_text_accum
+                                        ).is_verified is False
+                                    )
                                 )
                             ):
                                 if premature_stall_retries < MAX_STALL_RETRIES:
