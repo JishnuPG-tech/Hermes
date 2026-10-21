@@ -710,6 +710,22 @@ class HermesAgent:
                                     "name": tc["name"],
                                     "content": result_str,
                                 })
+                            working_messages = list(current_messages)
+                    else:
+                        # Budget exhaustion is not task completion. Let another
+                        # candidate resume from the latest saved conversation state.
+                        candidate_requires_fallback = True
+                        last_error = (
+                            f"Model {candidate} reached the tool-round budget "
+                            f"({MAX_TOOL_ROUNDS}) without a final result."
+                        )
+                        yield {
+                            "type": "thinking",
+                            "content": "Decision Engine: switching model to continue the task.\\n",
+                        }
+
+                if candidate_requires_fallback:
+                    continue
 
                 # Stage 2: Guaranteed Direct Synthesis Stream (WITHOUT TOOLS)
                 p_lower = last_user_msg.lower()
