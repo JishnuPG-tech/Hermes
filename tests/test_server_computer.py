@@ -22,6 +22,8 @@ print("Project registered:", p.name, "at", p.path)
 print("\n--- Test 2: Workspace Manager ---")
 wm = WorkspaceManager(registry=reg)
 
+import pytest
+@pytest.mark.asyncio
 async def test_ws():
     info = await wm.provision_workspace(task_id="test_task_1", project_id="hermes-x")
     assert info.task_id == "test_task_1"

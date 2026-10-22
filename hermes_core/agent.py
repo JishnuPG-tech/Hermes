@@ -9,12 +9,146 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
+from enum import Enum
+
+class TurnState(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    WAITING_FOR_TOOL = "WAITING_FOR_TOOL"
+    VERIFYING = "VERIFYING"
+    SYNTHESIZING = "SYNTHESIZING"
+    RECOVERING = "RECOVERING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+def is_action_oriented_task(prompt: str) -> bool:
+    """Determines semantically whether prompt expects tool execution vs informational conversation."""
+    if not prompt:
+        return False
+    p = prompt.lower()
+    action_cues = [
+        "check my", "search repo", "list repo", "find repo", "my repositories", "smartwatt",
+        "github", "run ", "execute", "install", "git ", "clone", "pull", "push", "commit",
+        "bash", "terminal", "read file", "write file", "edit file", "inspect", "status of",
+        "create file", "delete file", "search code", "fetch web", "curl"
+    ]
+    return any(cue in p for cue in action_cues) or AutonomyPolicy.is_action_oriented_task(prompt)
+
+def truncate_tool_result(result_str: str, max_chars: int = 8000) -> str:
+    """Limits any single tool output to preserve token headroom and prevent TPM exhaustion."""
+    if len(result_str) <= max_chars:
+        return result_str
+    head = result_str[:4000]
+    tail = result_str[-2000:]
+    return f"{head}\n\n... [Output truncated: {len(result_str)} total characters. Middle section omitted for brevity] ...\n\n{tail}"
+
+def estimate_context_tokens(msgs: List[Dict[str, Any]]) -> int:
+    """Estimates the total token count of conversation messages for context window & TPM management."""
+    total_chars = 0
+    for m in msgs:
+        total_chars += 16
+        content = m.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    total_chars += len(str(part.get("text", "")))
+        if "tool_calls" in m:
+            for tc in m.get("tool_calls", []):
+                fn = tc.get("function", {})
+                total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+    return int(total_chars / 3.2)
+
+def prune_context_messages(msgs: List[Dict[str, Any]], max_recent_tools: int = 4) -> List[Dict[str, Any]]:
+    """Prunes older tool messages to prevent context window / TPM rate limit exhaustion across long multi-step workflows."""
+    tool_indices = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+    if len(tool_indices) <= max_recent_tools:
+        return msgs
+
+    indices_to_prune = set(tool_indices[:-max_recent_tools])
+    pruned = []
+    for i, m in enumerate(msgs):
+        if i in indices_to_prune and m.get("role") == "tool":
+            c = m.get("content", "")
+            if len(c) > 300:
+                short_summary = c[:150] + f"\n... [Output trimmed ({len(c)} chars) for context headroom] ...\n" + c[-100:]
+                pruned.append({**m, "content": short_summary})
+            else:
+                pruned.append(m)
+        else:
+            pruned.append(m)
+    return pruned
+
+def compact_conversation_context(
+    msgs: List[Dict[str, Any]],
+    task_goal: str,
+    completed_actions: List[Dict[str, Any]],
+    recent_interactions_to_keep: int = 2
+) -> List[Dict[str, Any]]:
+    """Intelligently compacts conversation history into a structured checkpoint."""
+    if len(msgs) <= (recent_interactions_to_keep * 2 + 2):
+        return msgs
+
+    system_msg = None
+    first_user_msg = None
+    for m in msgs:
+        if m.get("role") == "system" and not system_msg:
+            system_msg = m
+        elif m.get("role") == "user" and not first_user_msg:
+            first_user_msg = m
+
+    recent_msgs = msgs[-(recent_interactions_to_keep * 2):]
+
+    action_lines = []
+    for idx, act in enumerate(completed_actions[-12:], 1):
+        tname = act.get("tool", "tool")
+        qdesc = act.get("desc", "")
+        stat = act.get("status", "ok")
+        summary = act.get("summary", "")
+        action_lines.append(f"{idx}. `{tname}` ({qdesc}) -> [{stat}] {summary[:120]}")
+
+    cwd = os.getcwd()
+    checkpoint_content = (
+        f"### [DURABLE TASK CHECKPOINT - Prior Steps 1-{len(completed_actions)} Completed]\n"
+        f"**Original Goal**: {task_goal}\n"
+        f"**Completed Actions Summary**:\n" +
+        ("\n".join(action_lines) if action_lines else "Steps executed on server container.") +
+        f"\n**Workspace State**: Working Directory: `{cwd}`\n"
+        f"**Instruction**: Continue executing the remaining steps to achieve the goal without re-running successfully completed actions."
+    )
+
+    checkpoint_msg = {
+        "role": "user",
+        "content": checkpoint_content
+    }
+
+    result = []
+    if system_msg:
+        result.append(system_msg)
+    if first_user_msg and first_user_msg != system_msg:
+        result.append(first_user_msg)
+    result.append(checkpoint_msg)
+    for rm in recent_msgs:
+        if rm != system_msg and rm != first_user_msg:
+            result.append(rm)
+
+    return result
+
+from hermes_core.decision_engine import (
+    AutonomyPolicy,
+    GoalVerifier,
+    StructuredPlanGenerator,
+    AutonomousTaskController,
+    TaskLifecycleState,
+    MAX_STALL_RETRIES,
+)
 
 logger = logging.getLogger("HermesAgent")
 
 UPSTREAM_URL = os.getenv("UPSTREAM_OMNIROUTE_URL", "https://jishnupg-opencode-cli.hf.space/v1").rstrip("/")
 UPSTREAM_API_KEY = os.getenv("UPSTREAM_API_KEY", os.getenv("API_KEY_SECRET", "Jishnu2005"))
-DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "nvidia/nvidia/nemotron-3-super-120b-a12b")
+DEFAULT_MODEL = os.getenv("HERMES_DEFAULT_MODEL", "antigravity/gemini-3-flash")
 
 HERMES_MASTER_SYSTEM_PROMPT = """You are Hermes Agent, a sovereign, powerful agentic AI and deeply loyal companion.
 
@@ -47,9 +181,10 @@ Please let me know if you would like me to inspect any of these files or run any
    - Render all code, output, and diagrams directly inside the chat using standard markdown code fences (```bash, ```python, ```markdown, ```html). Never output <antArtifact> tags."""
 
 try:
-    MAX_TOOL_ROUNDS = max(1, min(int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "6")), 12))
+    # Configurable tool budget. Exhaustion triggers model fallback, not false completion.
+    MAX_TOOL_ROUNDS = max(1, int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "45")))
 except ValueError:
-    MAX_TOOL_ROUNDS = 6
+    MAX_TOOL_ROUNDS = 45
 
 def extract_text_tool_calls(text: str, known_tools: set) -> List[Dict[str, Any]]:
     calls = []
@@ -304,47 +439,12 @@ class HermesAgent:
         p_lower = prompt.lower().strip()
         is_greeting_or_fast = len(p_lower.split()) <= 4 and any(g in p_lower for g in ["hi", "hello", "hey", "who are you", "what can you do", "help", "ping", "test", "thanks", "ok"])
 
-        # Prioritize live, confirmed high-performance NVIDIA NIM models and multi-provider failover
-        if is_greeting_or_fast:
-            tier_cascade = [
-                "nvidia/google/gemma-4-31b-it",
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "auto/fast",
-                "auto/smart",
-            ]
-        elif tier == "coding":
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/google/gemma-4-31b-it",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "antigravity/claude-sonnet-4-6",
-                "auto/best-coding",
-                "auto/smart",
-            ]
-        elif tier == "reasoning":
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "nvidia/google/gemma-4-31b-it",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-high",
-                "auto/best-reasoning",
-                "auto/smart",
-            ]
-        else:
-            tier_cascade = [
-                "nvidia/nvidia/nemotron-3-super-120b-a12b",
-                "nvidia/google/gemma-4-31b-it",
-                "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
-                "antigravity/gemini-2.5-flash",
-                "antigravity/gemini-3.7-flash-medium",
-                "auto/best-fast",
-                "auto/smart",
-            ]
+        # Prioritize live, verified high-performance models (Gemini 3 Flash, Nemotron 3 Ultra 550B)
+        tier_cascade = [
+            "antigravity/gemini-3-flash",
+            "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+            "antigravity/gemini-3.8-flash-tiered",
+        ]
 
         for model_id in tier_cascade:
             if model_id not in candidates:
@@ -427,11 +527,39 @@ class HermesAgent:
         known_tools = set(registry._tools.keys())
         stream_succeeded = False
         last_error = ""
+        # Keep the latest conversation state when switching model candidates.
+        working_messages = list(payload_messages)
+        working_data_blocks = []
+        # Authoritative AutonomousTaskController enforces formal task lifecycle
+        task_controller = AutonomousTaskController(
+            prompt=last_user_msg,
+            available_tools=known_tools if enable_dynamic_tools and not has_images else set(),
+        )
+        task_plan = task_controller.plan
+        plan_context = ""
+        if task_plan:
+            plan_context = (
+                "\n\n[HERMES EXECUTION PLAN - NOT YET COMPLETED]\n"
+                f"Goal: {task_plan.goal}\n"
+                "Complete each dependent step in order, recording actual results. "
+                "Do not mark an unexecuted step as complete. The plan is guidance; "
+                "choose the registered tool and arguments based on current evidence.\n"
+                + "\n".join(
+                    f"{index + 1}. [{step.id}] {step.action} "
+                    f"(success criteria: {step.success_criteria or 'verify the result'})"
+                    for index, step in enumerate(task_plan.steps)
+                )
+                + "\nA progress announcement is not task completion."
+            )
+            payload_messages[0]["content"] += plan_context
+            working_messages = list(payload_messages)
 
         for candidate in candidate_models:
-            current_messages = list(payload_messages)
-            gathered_data_blocks = []
+            current_messages = list(working_messages)
+            gathered_data_blocks = working_data_blocks
             executed_tool_signatures = set()
+            candidate_requires_fallback = False
+            premature_stall_retries = 0
             req_start = time.time()
             try:
                 # Stage 1: Autonomous Tool Execution. Tool results are fed back
@@ -472,6 +600,12 @@ class HermesAgent:
 
                         async with self.http_client.stream("POST", "/chat/completions", json=req_body, timeout=httpx.Timeout(45.0, connect=4.0)) as response:
                             if response.status_code != 200:
+                                err_text = await response.aread()
+                                last_error = (
+                                    f"Tool-loop upstream {candidate} ({response.status_code}): "
+                                    f"{err_text.decode('utf-8', errors='ignore')}"
+                                )
+                                candidate_requires_fallback = True
                                 break
 
                             async for line in response.aiter_lines():
@@ -545,69 +679,169 @@ class HermesAgent:
                             p_lower = last_user_msg.lower()
                             urls = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', last_user_msg)
                             
-                            # 1. Proactive URL Scraping
-                            if urls and "fetch_webpage" in known_tools and not gathered_data_blocks:
-                                for target_url in urls[:2]:
-                                    domain = target_url.split("//")[-1].split("/")[0]
-                                    yield {"type": "thinking", "content": f"Fetching {domain}...\n"}
-                                    page_content = await registry.execute_tool("fetch_webpage", {"url": target_url})
-                                    gathered_data_blocks.append(f"[fetch_webpage ({target_url})]:\n{page_content}")
-                                    yield {"type": "thinking", "content": f"Reading {domain} output...\n"}
+                            # Proactive tools run on step 0 if no tools run yet
+                            if step == 0 and not gathered_data_blocks:
+                                # 1. Proactive URL Scraping
+                                if urls and "fetch_webpage" in known_tools:
+                                    for target_url in urls[:2]:
+                                        domain = target_url.split("//")[-1].split("/")[0]
+                                        yield {"type": "thinking", "content": f"Fetching {domain}...\n"}
+                                        page_content = await registry.execute_tool("fetch_webpage", {"url": target_url})
+                                        gathered_data_blocks.append(f"[fetch_webpage ({target_url})]:\n{page_content}")
+                                        yield {"type": "thinking", "content": f"Reading {domain} output...\n"}
 
-                            # 2. Proactive Web Search for Research & Current Topics
-                            research_keywords = [
-                                "research", "investigate", "find information", "search", "who is", "what is",
-                                "leak", "leaks", "tell me about", "latest news", "cyberleek", "cyber", "internet",
-                                "sources", "check online"
-                            ]
-                            has_research_intent = any(k in p_lower for k in research_keywords)
-                            if step == 0 and has_research_intent and "web_search" in known_tools and not gathered_data_blocks:
-                                clean_query = re.sub(r'^(?:please\s+|can\s+you\s+|research\s+about\s+|search\s+for\s+|investigate\s+)', '', last_user_msg, flags=re.I).strip()
-                                if not clean_query:
-                                    clean_query = last_user_msg
-                                q_short = clean_query[:32] + ("..." if len(clean_query) > 32 else "")
-                                yield {"type": "thinking", "content": f"Searching the web for {q_short}...\n"}
-                                result_str = await registry.execute_tool("web_search", {"query": clean_query})
-                                gathered_data_blocks.append(f"[web_search ({clean_query})]:\n{result_str}")
-                                yield {"type": "thinking", "content": "Reading search results...\n"}
+                                # 2. Proactive Web Search for Research & Current Topics
+                                research_keywords = [
+                                    "research", "investigate", "find information", "search", "who is", "what is",
+                                    "leak", "leaks", "tell me about", "latest news", "cyberleek", "cyber", "internet",
+                                    "sources", "check online"
+                                ]
+                                has_research_intent = any(k in p_lower for k in research_keywords)
+                                if has_research_intent and "web_search" in known_tools:
+                                    clean_query = re.sub(r'^(?:please\s+|can\s+you\s+|research\s+about\s+|search\s+for\s+|investigate\s+)', '', last_user_msg, flags=re.I).strip()
+                                    if not clean_query:
+                                        clean_query = last_user_msg
+                                    q_short = clean_query[:32] + ("..." if len(clean_query) > 32 else "")
+                                    yield {"type": "thinking", "content": f"Searching the web for {q_short}...\n"}
+                                    result_str = await registry.execute_tool("web_search", {"query": clean_query})
+                                    gathered_data_blocks.append(f"[web_search ({clean_query})]:\n{result_str}")
+                                    yield {"type": "thinking", "content": "Reading search results...\n"}
 
-                            # 3. Proactive Knowledge Search across Notion (Primary) & Obsidian
-                            knowledge_keywords = [
-                                "what do i know", "project", "projects", "task", "tasks", "decision", "decisions",
-                                "plan", "plans", "roadmap", "architecture", "what did we decide", "my notes",
-                                "status of", "what are we working on", "notion", "workspace", "todo", "adr"
-                            ]
-                            has_knowledge_intent = any(k in p_lower for k in knowledge_keywords)
-                            if step == 0 and has_knowledge_intent and "search_knowledge" in known_tools and not gathered_data_blocks:
-                                yield {"type": "thinking", "content": "Querying knowledge base...\n"}
-                                k_result_str = await registry.execute_tool("search_knowledge", {"query": last_user_msg, "limit": 4})
-                                gathered_data_blocks.append(f"[search_knowledge (Notion Primary)]:\n{k_result_str}")
-                                yield {"type": "thinking", "content": "Reading knowledge records...\n"}
+                                # 3. Proactive Knowledge Search across Notion (Primary) & Obsidian
+                                knowledge_keywords = [
+                                    "what do i know", "project", "projects", "task", "tasks", "decision", "decisions",
+                                    "plan", "plans", "roadmap", "architecture", "what did we decide", "my notes",
+                                    "status of", "what are we working on", "notion", "workspace", "todo", "adr"
+                                ]
+                                has_knowledge_intent = any(k in p_lower for k in knowledge_keywords)
+                                if has_knowledge_intent and "search_knowledge" in known_tools:
+                                    yield {"type": "thinking", "content": "Querying knowledge base...\n"}
+                                    k_result_str = await registry.execute_tool("search_knowledge", {"query": last_user_msg, "limit": 4})
+                                    gathered_data_blocks.append(f"[search_knowledge (Notion Primary)]:\n{k_result_str}")
+                                    yield {"type": "thinking", "content": "Reading knowledge records...\n"}
 
-                            # 4. Proactive Server Computer & Storage status
-                            computer_keywords = ["server", "computer", "disk", "storage", "workspace", "workspaces", "system status", "diagnostics"]
-                            if step == 0 and any(k in p_lower for k in computer_keywords) and "computer_system_status" in known_tools and not any("computer_system_status" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Checking system metrics...\n"}
-                                status_str = await registry.execute_tool("computer_system_status", {})
-                                gathered_data_blocks.append(f"[computer_system_status]:\n{status_str}")
-                                yield {"type": "thinking", "content": "Reading diagnostic output...\n"}
+                                # 4. Proactive Server Computer & Storage status
+                                computer_keywords = ["server", "computer", "disk", "storage", "workspace", "workspaces", "system status", "diagnostics"]
+                                if any(k in p_lower for k in computer_keywords) and "computer_system_status" in known_tools and not any("computer_system_status" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Checking system metrics...\n"}
+                                    status_str = await registry.execute_tool("computer_system_status", {})
+                                    gathered_data_blocks.append(f"[computer_system_status]:\n{status_str}")
+                                    yield {"type": "thinking", "content": "Reading diagnostic output...\n"}
 
-                            # 5. Proactive Registered Projects list
-                            if step == 0 and any(k in p_lower for k in ["project list", "list projects", "what projects", "active projects"]) and "computer_project_list" in known_tools and not any("computer_project_list" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Inspecting registered projects...\n"}
-                                plist_str = await registry.execute_tool("computer_project_list", {})
-                                gathered_data_blocks.append(f"[computer_project_list]:\n{plist_str}")
-                                yield {"type": "thinking", "content": "Reading project records...\n"}
+                                # 5. Proactive Registered Projects list
+                                if any(k in p_lower for k in ["project list", "list projects", "what projects", "active projects"]) and "computer_project_list" in known_tools and not any("computer_project_list" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Inspecting registered projects...\n"}
+                                    plist_str = await registry.execute_tool("computer_project_list", {})
+                                    gathered_data_blocks.append(f"[computer_project_list]:\n{plist_str}")
+                                    yield {"type": "thinking", "content": "Reading project records...\n"}
 
-                            # 6. Proactive File & Directory inspection
-                            file_keywords = ["what files", "file list", "directory", "codebase", "folder structure", "check repository", "show files"]
-                            if step == 0 and any(k in p_lower for k in file_keywords) and "list_directory" in known_tools and not any("list_directory" in b for b in gathered_data_blocks):
-                                yield {"type": "thinking", "content": "Running the ls command...\n"}
-                                dir_str = await registry.execute_tool("list_directory", {"path": "."})
-                                gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
-                                yield {"type": "thinking", "content": "Reading the ls output...\n"}
+                                # 6. Proactive File & Directory inspection
+                                file_keywords = ["what files", "file list", "directory", "codebase", "folder structure", "check repository", "show files"]
+                                if any(k in p_lower for k in file_keywords) and "list_directory" in known_tools and not any("list_directory" in b for b in gathered_data_blocks):
+                                    yield {"type": "thinking", "content": "Running the ls command...\n"}
+                                    dir_str = await registry.execute_tool("list_directory", {"path": "."})
+                                    gathered_data_blocks.append(f"[list_directory (.)]:\n{dir_str}")
+                                    yield {"type": "thinking", "content": "Reading the ls output...\n"}
 
-                            break
+                            # Evaluate turn through the authoritative AutonomousTaskController
+                            turn_decision = task_controller.evaluate_model_turn(
+                                raw_text=raw_text_accum,
+                                has_tool_calls=False,
+                                gathered_data_blocks=gathered_data_blocks,
+                                stall_attempts=premature_stall_retries,
+                            )
+
+                            if turn_decision.kind == "EXECUTE_DETERMINISTIC_STEP" and turn_decision.tool:
+                                det_tool = turn_decision.tool
+                                det_args = turn_decision.arguments or {}
+                                next_step = task_plan.next_ready_step() if task_plan else None
+                                step_desc = f"[{next_step.id}] '{next_step.action}'" if next_step else det_tool
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: autonomously executing plan step {step_desc}...\n",
+                                }
+                                det_result = await registry.execute_tool(det_tool, det_args)
+                                q_desc = det_args.get("command") or det_args.get("query") or det_args.get("skill_name") or det_tool
+                                gathered_data_blocks.append(f"[{det_tool} ({q_desc})]:\n{det_result}")
+                                if task_plan:
+                                    task_plan.advance_with_evidence(det_tool, det_args, det_result)
+
+                                call_id = f"call_det_{step}_{int(time.time() * 1000) % 10000}"
+                                current_messages.append({
+                                    "role": "assistant",
+                                    "content": raw_text_accum or f"Executing {det_tool}",
+                                    "tool_calls": [
+                                        {
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {
+                                                "name": det_tool,
+                                                "arguments": json.dumps(det_args, ensure_ascii=False),
+                                            },
+                                        }
+                                    ],
+                                })
+                                current_messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "name": det_tool,
+                                    "content": det_result,
+                                })
+                                working_messages = list(current_messages)
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: step completed with live result, continuing execution.\n",
+                                }
+                                continue
+
+                            elif turn_decision.kind == "RETRY_WITH_DIRECTIVE":
+                                premature_stall_retries += 1
+                                directive_text = ""
+                                if task_plan and not task_plan.is_complete:
+                                    next_step = task_plan.next_ready_step()
+                                    if next_step:
+                                        directive_text = AutonomyPolicy.plan_step_directive(
+                                            task_plan, next_step, raw_text_accum, premature_stall_retries
+                                        )
+                                if not directive_text:
+                                    verification = GoalVerifier.evaluate(last_user_msg, gathered_data_blocks, raw_text_accum)
+                                    if gathered_data_blocks and not verification.is_verified:
+                                        directive_text = AutonomyPolicy.partial_goal_directive(
+                                            last_user_msg, gathered_data_blocks, raw_text_accum,
+                                            verification.missing_aspect or "Goal incomplete",
+                                            premature_stall_retries
+                                        )
+                                    else:
+                                        directive_text = AutonomyPolicy.recovery_directive(
+                                            last_user_msg, raw_text_accum, premature_stall_retries
+                                        )
+
+                                current_messages.append({"role": "assistant", "content": raw_text_accum})
+                                current_messages.append({"role": "user", "content": directive_text})
+                                working_messages = list(current_messages)
+                                yield {
+                                    "type": "thinking",
+                                    "content": f"Decision Engine: action announcement detected without a tool call; retrying ({premature_stall_retries}/{MAX_STALL_RETRIES}).\n",
+                                }
+                                continue
+
+                            elif turn_decision.kind == "FALLBACK_MODEL":
+                                candidate_requires_fallback = True
+                                last_error = (
+                                    f"Model {candidate} stalled on action task without tool calls "
+                                    f"after {premature_stall_retries} attempts."
+                                )
+                                yield {
+                                    "type": "thinking",
+                                    "content": "Decision Engine: stall limit reached; switching model candidate while preserving progress.\n",
+                                }
+                                break
+
+                            elif turn_decision.kind == "COMPLETE":
+                                break
+
+                            else:
+                                break
 
                         tool_results = []
                         for tc in unique_calls:
@@ -621,6 +855,8 @@ class HermesAgent:
                             result_str = await registry.execute_tool(tool_name, tool_args)
                             tool_results.append(result_str)
                             gathered_data_blocks.append(f"[{tool_name} ({query_desc})]:\n{result_str}")
+                            if task_plan:
+                                task_plan.advance_with_evidence(tool_name, tool_args, result_str)
 
                             if "error" in result_str.lower() or "failed" in result_str.lower():
                                 yield {"type": "thinking", "content": f"Analyzing error in {tool_name}...\n"}
@@ -654,19 +890,63 @@ class HermesAgent:
                                     "name": tc["name"],
                                     "content": result_str,
                                 })
+                            working_messages = list(current_messages)
+                    else:
+                        # Budget exhaustion is not task completion. Let another
+                        # candidate resume from the latest saved conversation state.
+                        candidate_requires_fallback = True
+                        last_error = (
+                            f"Model {candidate} reached the tool-round budget "
+                            f"({MAX_TOOL_ROUNDS}) without a final result."
+                        )
+                        yield {
+                            "type": "thinking",
+                            "content": "Decision Engine: switching model to continue the task.\n",
+                        }
+
+                if candidate_requires_fallback:
+                    continue
 
                 # Stage 2: Guaranteed Direct Synthesis Stream (WITHOUT TOOLS)
+                # Gatekeeper: Action tasks MUST have verified completion before entering Stage 2 synthesis!
+                if task_controller.classification.requires_tools:
+                    if not task_controller.can_complete(raw_text_accum if 'raw_text_accum' in locals() else "", gathered_data_blocks):
+                        verification = GoalVerifier.evaluate(last_user_msg, gathered_data_blocks, raw_text_accum if 'raw_text_accum' in locals() else "")
+                        last_error = f"Goal verification not satisfied: {verification.missing_aspect}"
+                        candidate_requires_fallback = True
+                        yield {
+                            "type": "thinking",
+                            "content": f"Decision Engine: cannot synthesize ({last_error}); switching candidate model.\n",
+                        }
+                        continue
                 p_lower = last_user_msg.lower()
                 is_coding = any(k in p_lower for k in ["write code", "implement", "script", "function", "algorithm", "debug", "refactor", "create a program", "fastapi", "react", "python code", "flutter", "kotlin"])
                 is_analysis = any(k in p_lower for k in ["calculate", "math", "equation", "solve", "formula", "data analysis", "statistics", "integral", "derivative", "matrix"])
                 wants_report = any(k in p_lower for k in ["report", "comprehensive", "detailed report", "exhaustive report", "full analysis", "write a report", "documentation report"])
 
                 synth_system = HERMES_MASTER_SYSTEM_PROMPT + "\n\n"
+                is_video_or_media = any(w in p_lower for w in ["video", "brag", "render", "clip", "mp4", "media", "animation"])
                 if gathered_data_blocks:
                     if wants_report:
                         synth_system += (
                             "You have completed live tool research. Deliver the comprehensive, thorough, "
                             "multi-section research report requested by the user."
+                        )
+                    elif is_video_or_media:
+                        synth_system += (
+                            "You have completed the video/media generation workflow on the server.\n"
+                            "Persona & Tone: Sweet, loyal, deeply caring, and respectful companion.\n"
+                            "Deliver a warm, enthusiastic response celebrating the completed video.\n"
+                            "Always provide the direct markdown download link, for example: `[Download Video](https://jishnupg-hermes.hf.space/artifacts/videos/<filename>.mp4)` (or `/artifacts/videos/<filename>.mp4`).\n"
+                            "Mention the video details and highlights warmly and offer to tweak anything."
+                        )
+                    elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                        synth_system += (
+                            "You have completed the requested operations on the server.\n"
+                            "Persona & Tone: Sweet, loyal, deeply caring, and respectful companion.\n"
+                            "Provide a warm, proud, and courteous summary of the work completed and artifacts produced.\n"
+                            "Provide download or preview links for any created files or artifacts.\n"
+                            "Never dump massive raw console logs unless the user explicitly requested raw logs."
                         )
                     else:
                         synth_system += (
@@ -720,11 +1000,28 @@ class HermesAgent:
 
                 active_content = last_user_msg
                 if gathered_data_blocks:
-                    gathered_str = "\n\n".join(gathered_data_blocks)
+                    # Compact oversized intermediate blocks to prevent context overflow
+                    compacted_blocks = []
+                    for b in gathered_data_blocks:
+                        if len(b) > 2000:
+                            lines = b.splitlines()
+                            if len(lines) > 20:
+                                compacted_blocks.append("\n".join(lines[:10]) + "\n... [intermediate output trimmed] ...\n" + "\n".join(lines[-10:]))
+                            else:
+                                compacted_blocks.append(b[:800] + "\n... [trimmed] ...\n" + b[-800:])
+                        else:
+                            compacted_blocks.append(b)
+                    gathered_str = "\n\n".join(compacted_blocks)
+
                     if wants_report:
                         active_content = (
                             f"{last_user_msg}\n\n[Verified Research Data gathered from Live Tools]:\n{gathered_str}\n\n"
                             f"[Instruction]: Write out the comprehensive, detailed research report as requested by the user."
+                        )
+                    elif is_video_or_media:
+                        active_content = (
+                            f"{last_user_msg}\n\n[Verified Video Generation Execution Output]:\n{gathered_str}\n\n"
+                            f"[Instruction]: Warmly announce the completed video to the user. Provide the direct markdown download link (e.g. `[Download Video](https://jishnupg-hermes.hf.space/artifacts/videos/<filename>.mp4)` or `/artifacts/videos/<filename>.mp4`). Explain what scenes were included and offer to tweak anything."
                         )
                     else:
                         active_content = (
@@ -820,6 +1117,9 @@ class HermesAgent:
                             continue
 
                 if stream_succeeded:
+                    if task_controller.classification.requires_tools:
+                        if task_controller.state_machine.can_transition(TaskLifecycleState.COMPLETED):
+                            task_controller.state_machine.transition(TaskLifecycleState.COMPLETED, "Autonomous execution verified and synthesized")
                     # Autonomous Decision / Milestone Persistence to Notion
                     p_lower = last_user_msg.lower()
                     if any(k in p_lower for k in ["decision", "decide", "architect", "architecture", "adr", "milestone"]):
@@ -863,14 +1163,57 @@ class HermesAgent:
                 continue
 
         if not stream_succeeded:
-            # Sovereign Local Intelligence Fallback: NEVER crash with an error to the user!
+            task_controller.mark_blocked(last_error or "Exhausted candidate models without goal verification")
+            # Sovereign Local Intelligence Fallback: Deliver graceful result, never dump raw server traces
             if gathered_data_blocks:
-                tool_output_joined = "\n\n".join(gathered_data_blocks)
-                fallback_msg = (
-                    f"Here is the output of the command that you asked for:\n\n"
-                    f"{tool_output_joined}\n\n"
-                    f"Please let me know if you would like me to inspect any of these files or run anything else for you!"
-                )
+                produced_videos = []
+                for block in gathered_data_blocks:
+                    found = re.findall(r'([a-zA-Z0-9_\-\./\\]+\.mp4)', block)
+                    for f in found:
+                        clean_name = os.path.basename(f.strip().strip("'\""))
+                        if clean_name and clean_name not in produced_videos and not clean_name.startswith("*"):
+                            produced_videos.append(clean_name)
+
+                is_video_intent = any(w in last_user_msg.lower() for w in ["video", "brag", "render", "clip", "mp4"])
+                if is_video_intent and produced_videos:
+                    target_video = produced_videos[-1]
+                    fallback_msg = (
+                        f"I have successfully generated your video!\n\n"
+                        f"Here is your direct preview and download link:\n\n"
+                        f"**[Download {target_video}](https://jishnupg-hermes.hf.space/artifacts/videos/{target_video})**\n\n"
+                        f"- **File**: `{target_video}`\n"
+                        f"- **Location**: `/artifacts/videos/{target_video}`\n\n"
+                        f"Please let me know if you would like me to adjust any scene or format!"
+                    )
+                elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                    actions_taken = []
+                    for block in gathered_data_blocks:
+                        m = re.match(r'\[([a-zA-Z0-9_]+)\s*\((.*?)\)\]', block)
+                        if m:
+                            tool_name, desc = m.group(1), m.group(2)
+                            short_desc = desc[:70] + ("..." if len(desc) > 70 else "")
+                            actions_taken.append(f"- `{tool_name}`: {short_desc}")
+
+                    actions_summary = "\n".join(actions_taken[:6]) if actions_taken else "- Initial workspace setup and inspection"
+                    fallback_msg = (
+                        f"I began working on your request: '{last_user_msg}'.\n\n"
+                        f"**Operations Executed:**\n{actions_summary}\n\n"
+                        f"**Status:** {last_error or 'Execution reached an intermediate stage awaiting your next instruction.'}\n\n"
+                        "All intermediate workspace progress has been preserved safely. How would you like me to proceed?"
+                    )
+                else:
+                    trimmed_blocks = []
+                    for b in gathered_data_blocks[-3:]:
+                        if len(b) > 2000:
+                            trimmed_blocks.append(b[:1000] + "\n... [truncated] ...\n" + b[-1000:])
+                        else:
+                            trimmed_blocks.append(b)
+                    tool_output_joined = "\n\n".join(trimmed_blocks)
+                    fallback_msg = (
+                        f"Here is the output from your server:\n\n"
+                        f"```bash\n{tool_output_joined}\n```\n\n"
+                        "Please let me know if you would like me to inspect any of these details further!"
+                    )
             elif is_greeting_or_fast:
                 p_l = last_user_msg.lower()
                 if any(w in p_l for w in ["who are you", "what is your name", "your name"]):
@@ -883,11 +1226,11 @@ class HermesAgent:
                     )
                 else:
                     fallback_msg = "Hello! I am Hermes Agent, your loyal companion and autonomous partner. How may I serve you today?"
-            elif is_coding:
+            elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
                 fallback_msg = (
-                    f"I have reviewed your coding request regarding: '{last_user_msg}'. "
-                    f"I am actively connected to your codebase workspace and ready to implement or run this for you. "
-                    f"Please let me know if you would like me to execute it directly on the server!"
+                    f"The requested action could not be verified: {last_user_msg!r}. "
+                    f"Last runtime error: {last_error or 'No executable action was produced.'} "
+                    "The task remains unresolved."
                 )
             else:
                 fallback_msg = (

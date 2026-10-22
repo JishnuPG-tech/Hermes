@@ -10,14 +10,13 @@ class ToolRegistry:
         self._categories: Dict[str, List[str]] = {
             "web": [],
             "coding": [],
-            "files": [],
             "vault": [],
             "memory": [],
             "system": []
         }
-        self._enabled_categories: set = {"web", "coding", "files", "vault", "memory", "system"}
+        self._enabled_categories: set = {"web", "coding", "vault", "memory", "system"}
 
-    def register(self, name: str, description: str, parameters: Dict[str, Any], category: str = "system"):
+    def register(self, name: str, description: str, parameters: Dict[str, Any], category: str = "system", permissions: Optional[List[str]] = None, **kwargs):
         def decorator(fn: Callable):
             schema = {
                 "type": "function",
@@ -30,13 +29,35 @@ class ToolRegistry:
             self._tools[name] = {
                 "schema": schema,
                 "category": category,
-                "description": description
+                "description": description,
+                "permissions": permissions or []
             }
             self._handlers[name] = fn
             if category not in self._categories:
                 self._categories[category] = []
             if name not in self._categories[category]:
                 self._categories[category].append(name)
+            
+            try:
+                from hermes_core.runtime.tool_discovery import capability_index
+                from hermes_core.runtime.models import ToolMetadata, ToolCategory
+                from hermes_core.runtime.tool_controller import tool_executor
+                cat_enum = ToolCategory.SYSTEM
+                try:
+                    cat_enum = ToolCategory(category)
+                except Exception:
+                    pass
+                capability_index.register_capability(ToolMetadata(
+                    name=name,
+                    description=description,
+                    input_schema=parameters,
+                    category=cat_enum,
+                    permissions=permissions or []
+                ))
+                tool_executor.register_handler(name, fn)
+            except Exception:
+                pass
+
             return fn
         return decorator
 
@@ -54,11 +75,9 @@ class ToolRegistry:
 
     def select_tools_for_prompt(self, prompt: str, user_requested_tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """
-        Intelligent context-aware tool selection.
-        - Returns [] for ultra-short trivial greetings (0ms tool overhead).
-        - For all substantive tasks, queries, and instructions, equips Hermes with
-          the full autonomous tool suite across web, coding, vault (Notion/Obsidian),
-          memory, and system (Server Computer) so Hermes can act without explicit user prompts.
+        Dynamic context-aware tool selection.
+        Analyzes prompt intent to only load schemas relevant to the query,
+        saving prompt tokens and avoiding hallucinations.
         """
         if user_requested_tools:
             return [
@@ -66,21 +85,60 @@ class ToolRegistry:
                 if name in self._tools and self._tools[name]["category"] in self._enabled_categories
             ]
 
-        p = prompt.lower().strip()
-        words = p.split()
-        
-        # Fast path: instant conversational response for pure greetings or single acknowledgments
-        trivial_greetings = {"hi", "hello", "hey", "sup", "thanks", "thank", "you", "ok", "okay", "k", "bye", "ping"}
-        if len(words) <= 3 and all(re.sub(r'[^a-z]', '', w) in trivial_greetings for w in words if re.sub(r'[^a-z]', '', w)):
-            return []
+        p = prompt.lower()
+        selected_categories = set()
 
-        # For all substantive queries, provide full autonomous access across all enabled categories
+        # Web search intent
+        if any(w in p for w in ["search", "google", "web", "latest", "news", "find online", "who is", "what is the current", "url", "http", "research", "investigate", "look up", "leak", "leaks", "find out", "check online", "sources", "information on", "about", "cyber", "internet"]):
+            selected_categories.add("web")
+
+        # Coding / execution / GitHub / Instagram / system checks
+        if any(w in p for w in [
+            "code", "python", "bash", "execute", "run", "script", "terminal",
+            "shell", "server", "calculate", "math", "program", "debug",
+            "install", "package", "apt", "pip", "npm", "git", "clone", "pull",
+            "push", "commit", "repo", "repository", "file", "read", "write",
+            "edit", "delete", "deploy", "build", "process", "log", "github",
+            "gh", "access", "configured", "config", "check", "status", "verify",
+            "token", "secret", "secrets", "env", "credential", "credentials",
+            "instagram", "insta", "reel", "post", "social", "media"
+        ]):
+            selected_categories.add("coding")
+            selected_categories.add("files")
+
+        # Obsidian vault / notes intent
+        if any(w in p for w in ["note", "vault", "obsidian", "save note", "read note", "journal", "document", "knowledge"]):
+            selected_categories.add("vault")
+
+        # Memory / recall / instructions intent
+        if any(w in p for w in [
+            "remember", "memory", "recall", "who am i", "my name", "preferences",
+            "past conversation", "save", "instruction", "instructions", "rule",
+            "rules", "always", "never", "forget", "store", "keep in mind"
+        ]):
+            selected_categories.add("memory")
+        # System & skill discovery intent
+        if any(w in p for w in [
+            "skill", "skills", "brag", "capability", "capabilities", "tool", "tools",
+            "system", "who are you", "what can you do", "features", "video", "render",
+            "generate video", "smartwatt", "doctor", "health"
+        ]):
+            selected_categories.add("system")
+
+        # If no specific categories matched, equip the agent with core foundational tools
+        if not selected_categories:
+            selected_categories.add("coding")
+            selected_categories.add("memory")
+            selected_categories.add("web")
+
+        # Collect schemas
         result = []
-        for cat in ["vault", "coding", "files", "web", "memory", "system"]:
+        for cat in selected_categories:
             if cat in self._enabled_categories:
                 for tool_name in self._categories.get(cat, []):
-                    if tool_name in self._tools:
-                        result.append(self._tools[tool_name]["schema"])
+                    schema = self._tools[tool_name]["schema"]
+                    if schema not in result:
+                        result.append(schema)
         return result
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> str:
