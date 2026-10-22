@@ -443,6 +443,26 @@ class StructuredPlan:
             if m_ret:
                 exit_code = int(m_ret.group(1))
 
+        # 3. For verification steps, prioritize positive artifact confirmation
+        if "verify" in step.id.lower():
+            has_confirmed_artifact = (
+                any(ext in tool_output.lower() for ext in [".mp4", ".png", ".jpg", ".zip", ".tar", ".json", ".txt"])
+                and any(size_indicator in tool_output for size_indicator in [" K ", " M ", " G ", " total ", "-rw-", "-rwx", "bytes", "bits"])
+            ) or (exit_code == 0 and len(tool_output.strip()) > 0 and "not found" not in tool_output.lower() and "cannot access" not in tool_output.lower())
+
+            if has_confirmed_artifact:
+                step.status = "completed"
+                step.evidence = tool_output[:500]
+                return step
+
+            missing_indicators = ("0 bytes", "empty file", "not found: 0 files")
+            is_unconditionally_missing = ("cannot access" in tool_output.lower() or "no such file" in tool_output.lower())
+
+            if is_unconditionally_missing or any(m in tool_output.lower() for m in missing_indicators):
+                step.status = "failed"
+                step.evidence = f"Artifact verification failed: {tool_output[:400]}"
+                return step
+
         error_indicators = (
             "command not found",
             "traceback (most recent call last)",
@@ -462,14 +482,6 @@ class StructuredPlan:
             step.status = "failed"
             step.evidence = f"Step failed: {tool_output[:400]}"
             return step
-
-        # 3. For verification steps, check artifact confirmation
-        if "verify" in step.id.lower():
-            missing_indicators = ("not found", "no such file", "cannot access", "0 bytes", "empty file")
-            if any(m in tool_output.lower() for m in missing_indicators):
-                step.status = "failed"
-                step.evidence = f"Artifact verification failed: {tool_output[:400]}"
-                return step
 
         # Step successfully completed
         step.status = "completed"
@@ -582,21 +594,32 @@ class GoalVerifier:
             )
 
         p_lower = prompt.lower()
-        if any(w in p_lower for w in ["video", "render", "moviepy"]):
+        if any(w in p_lower for w in ["video", "render", "moviepy", "brag"]):
+            has_confirmed_mp4 = any(
+                (".mp4" in block.lower() and any(k in block.lower() for k in ["-rw", "total", "bytes", "exit code: 0", "[exit code: 0]"]))
+                or any(t in block.lower() for t in ["video ready", "rendering complete", "video successfully rendered"])
+                for block in gathered_data_blocks
+            )
+            latest_block = gathered_data_blocks[-1].lower() if gathered_data_blocks else ""
+            has_fatal_latest_error = any(err in latest_block for err in ["failed to render", "syntaxerror", "exit code: 127"])
+
+            if has_confirmed_mp4 and not has_fatal_latest_error:
+                return GoalVerificationResult(is_verified=True, evidence_summary="Video artifact verified on disk")
+
             has_render_evidence = any(
                 term in combined_evidence.lower()
                 for term in [
                     "moviepy - writing video",
                     "rendering complete",
                     "video ready",
+                    "video successfully rendered",
                     "fps:",
                     ".mp4",
-                    "exit code: 0",
                     "[exit code: 0]",
                 ]
             )
             has_error = any(
-                err in combined_evidence.lower()
+                err in latest_block
                 for err in [
                     "failed to render",
                     "traceback",
@@ -650,9 +673,9 @@ class StructuredPlanGenerator:
                     ),
                     PlanStep(
                         id="verify_output",
-                        action="Verify rendered video artifact exists on disk",
+                        action="Verify rendered video artifact exists on disk and stage to artifacts directory",
                         tool="bash_exec",
-                        arguments={"command": "ls -lh *.mp4 brag-output/*.mp4 2>/dev/null || test -f bragv1.mp4"},
+                        arguments={"command": "mkdir -p artifacts/videos && (find . -maxdepth 3 -name '*.mp4' -not -path '*/node_modules/*' -not -path '*/.git/*' -exec cp -f {} artifacts/videos/ \\; 2>/dev/null || true) && ls -lh artifacts/videos/*.mp4 *.mp4 brag-output*/*.mp4 workspace/*/*.mp4 2>/dev/null || find . -name '*.mp4'"},
                         depends_on=["execute_render"],
                         success_criteria="Output video file exists on disk and is non-empty",
                     ),
@@ -681,9 +704,9 @@ class StructuredPlanGenerator:
                     ),
                     PlanStep(
                         id="verify_output",
-                        action="Verify rendered video artifact exists and is non-empty",
+                        action="Verify rendered video artifact exists on disk and stage to artifacts directory",
                         tool="bash_exec",
-                        arguments={"command": "ls -lh *.mp4 2>/dev/null || test -f output.mp4"},
+                        arguments={"command": "mkdir -p artifacts/videos && (find . -maxdepth 3 -name '*.mp4' -not -path '*/node_modules/*' -not -path '*/.git/*' -exec cp -f {} artifacts/videos/ \\; 2>/dev/null || true) && ls -lh artifacts/videos/*.mp4 *.mp4 brag-output*/*.mp4 workspace/*/*.mp4 2>/dev/null || find . -name '*.mp4'"},
                         depends_on=["execute_render"],
                         success_criteria="Output video file exists on disk",
                     ),

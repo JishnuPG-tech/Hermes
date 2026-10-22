@@ -354,6 +354,33 @@ class AutonomyPolicyTests(unittest.TestCase):
         decision = controller.evaluate_model_turn(final_text, has_tool_calls=False, gathered_data_blocks=[], stall_attempts=0)
         self.assertEqual(decision.kind, "COMPLETE")
 
+    def test_video_task_artifacts_staging_in_plan(self):
+        plan = StructuredPlanGenerator.generate_plan("Run brag on smartwatt and generate 30 second video and give me download link")
+        verify_step = next((s for s in plan.steps if s.id == "verify_output"), None)
+        self.assertIsNotNone(verify_step)
+        self.assertIn("artifacts/videos", verify_step.arguments["command"])
+
+    def test_video_goal_verifier_approves_when_artifact_confirmed(self):
+        evidence = [
+            "[bash_exec (which moviepy)]:\nexit code: 1",  # Intermediate error
+            "[bash_exec (python3 generate_video.py)]:\nRendering complete\n[EXIT CODE: 0]",
+            "[bash_exec (ls -lh artifacts/videos/*.mp4)]:\n-rw-r--r-- 1 root root 362K Oct 21 17:43 artifacts/videos/smartwatt_promo.mp4"
+        ]
+        res = GoalVerifier.evaluate("generate video for smartwatt", evidence, "Here is your video download link: [Download](https://jishnupg-hermes.hf.space/artifacts/videos/smartwatt_promo.mp4)")
+        self.assertTrue(res.is_verified)
+        self.assertIn("Video artifact verified on disk", res.evidence_summary)
+
+    def test_advance_with_evidence_tolerates_wildcard_misses_if_artifact_confirmed(self):
+        plan = StructuredPlanGenerator.generate_plan("Render video")
+        plan.steps[0].status = "completed"
+        plan.steps[1].status = "completed"
+        self.assertEqual(plan.next_ready_step().id, "verify_output")
+        # Output contains wildcard warning AND actual confirmed artifact file with size
+        tool_output = "ls: cannot access '*.mp4': No such file or directory\n-rw-r--r-- 1 root root 362K Oct 21 17:43 brag-output/smartwatt_promo.mp4"
+        res = plan.advance_with_evidence("bash_exec", {"command": "ls -lh *.mp4 brag-output/*.mp4"}, tool_output)
+        self.assertIsNotNone(res)
+        self.assertEqual(res.status, "completed")
+
     def test_skill_tools_discovery_and_reading(self):
         import asyncio
         skills_output = asyncio.run(list_skills())

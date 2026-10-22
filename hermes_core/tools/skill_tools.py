@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from hermes_core.tools.registry import registry
 
+ACTIVE_CONVERSATION_SKILLS: Dict[str, Any] = {}
+BUILTIN_SKILLS: List[str] = ["brag", "python-pro", "fastapi-pro", "ig-reel", "ig-caption", "ig-plan", "ig-human", "ig-viral"]
+
 SKILL_DIRECTORIES = [
     Path("skills"),
     Path(".agents/skills"),
@@ -164,6 +167,8 @@ async def read_skill_documentation(skill_name: str) -> str:
 
     try:
         content = skill_md.read_text(encoding="utf-8", errors="replace")
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n... [documentation truncated for prompt context] ..."
         return json.dumps({
             "status": "success",
             "skill": target_dir.name,

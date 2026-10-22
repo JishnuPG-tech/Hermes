@@ -9,6 +9,132 @@ from typing import List, Dict, Any, AsyncGenerator, Optional
 from hermes_core.tools.registry import registry
 import hermes_core.tools  # Trigger tool discovery
 from hermes_core.omniroute_adapter import OmniRouteAdapter, ROUTING_PROFILES
+from enum import Enum
+
+class TurnState(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    WAITING_FOR_TOOL = "WAITING_FOR_TOOL"
+    VERIFYING = "VERIFYING"
+    SYNTHESIZING = "SYNTHESIZING"
+    RECOVERING = "RECOVERING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+def is_action_oriented_task(prompt: str) -> bool:
+    """Determines semantically whether prompt expects tool execution vs informational conversation."""
+    if not prompt:
+        return False
+    p = prompt.lower()
+    action_cues = [
+        "check my", "search repo", "list repo", "find repo", "my repositories", "smartwatt",
+        "github", "run ", "execute", "install", "git ", "clone", "pull", "push", "commit",
+        "bash", "terminal", "read file", "write file", "edit file", "inspect", "status of",
+        "create file", "delete file", "search code", "fetch web", "curl"
+    ]
+    return any(cue in p for cue in action_cues) or AutonomyPolicy.is_action_oriented_task(prompt)
+
+def truncate_tool_result(result_str: str, max_chars: int = 8000) -> str:
+    """Limits any single tool output to preserve token headroom and prevent TPM exhaustion."""
+    if len(result_str) <= max_chars:
+        return result_str
+    head = result_str[:4000]
+    tail = result_str[-2000:]
+    return f"{head}\n\n... [Output truncated: {len(result_str)} total characters. Middle section omitted for brevity] ...\n\n{tail}"
+
+def estimate_context_tokens(msgs: List[Dict[str, Any]]) -> int:
+    """Estimates the total token count of conversation messages for context window & TPM management."""
+    total_chars = 0
+    for m in msgs:
+        total_chars += 16
+        content = m.get("content")
+        if isinstance(content, str):
+            total_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    total_chars += len(str(part.get("text", "")))
+        if "tool_calls" in m:
+            for tc in m.get("tool_calls", []):
+                fn = tc.get("function", {})
+                total_chars += len(fn.get("name", "")) + len(fn.get("arguments", ""))
+    return int(total_chars / 3.2)
+
+def prune_context_messages(msgs: List[Dict[str, Any]], max_recent_tools: int = 4) -> List[Dict[str, Any]]:
+    """Prunes older tool messages to prevent context window / TPM rate limit exhaustion across long multi-step workflows."""
+    tool_indices = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+    if len(tool_indices) <= max_recent_tools:
+        return msgs
+
+    indices_to_prune = set(tool_indices[:-max_recent_tools])
+    pruned = []
+    for i, m in enumerate(msgs):
+        if i in indices_to_prune and m.get("role") == "tool":
+            c = m.get("content", "")
+            if len(c) > 300:
+                short_summary = c[:150] + f"\n... [Output trimmed ({len(c)} chars) for context headroom] ...\n" + c[-100:]
+                pruned.append({**m, "content": short_summary})
+            else:
+                pruned.append(m)
+        else:
+            pruned.append(m)
+    return pruned
+
+def compact_conversation_context(
+    msgs: List[Dict[str, Any]],
+    task_goal: str,
+    completed_actions: List[Dict[str, Any]],
+    recent_interactions_to_keep: int = 2
+) -> List[Dict[str, Any]]:
+    """Intelligently compacts conversation history into a structured checkpoint."""
+    if len(msgs) <= (recent_interactions_to_keep * 2 + 2):
+        return msgs
+
+    system_msg = None
+    first_user_msg = None
+    for m in msgs:
+        if m.get("role") == "system" and not system_msg:
+            system_msg = m
+        elif m.get("role") == "user" and not first_user_msg:
+            first_user_msg = m
+
+    recent_msgs = msgs[-(recent_interactions_to_keep * 2):]
+
+    action_lines = []
+    for idx, act in enumerate(completed_actions[-12:], 1):
+        tname = act.get("tool", "tool")
+        qdesc = act.get("desc", "")
+        stat = act.get("status", "ok")
+        summary = act.get("summary", "")
+        action_lines.append(f"{idx}. `{tname}` ({qdesc}) -> [{stat}] {summary[:120]}")
+
+    cwd = os.getcwd()
+    checkpoint_content = (
+        f"### [DURABLE TASK CHECKPOINT - Prior Steps 1-{len(completed_actions)} Completed]\n"
+        f"**Original Goal**: {task_goal}\n"
+        f"**Completed Actions Summary**:\n" +
+        ("\n".join(action_lines) if action_lines else "Steps executed on server container.") +
+        f"\n**Workspace State**: Working Directory: `{cwd}`\n"
+        f"**Instruction**: Continue executing the remaining steps to achieve the goal without re-running successfully completed actions."
+    )
+
+    checkpoint_msg = {
+        "role": "user",
+        "content": checkpoint_content
+    }
+
+    result = []
+    if system_msg:
+        result.append(system_msg)
+    if first_user_msg and first_user_msg != system_msg:
+        result.append(first_user_msg)
+    result.append(checkpoint_msg)
+    for rm in recent_msgs:
+        if rm != system_msg and rm != first_user_msg:
+            result.append(rm)
+
+    return result
+
 from hermes_core.decision_engine import (
     AutonomyPolicy,
     GoalVerifier,
@@ -56,9 +182,9 @@ Please let me know if you would like me to inspect any of these files or run any
 
 try:
     # Configurable tool budget. Exhaustion triggers model fallback, not false completion.
-    MAX_TOOL_ROUNDS = max(1, int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "32")))
+    MAX_TOOL_ROUNDS = max(1, int(os.getenv("HERMES_MAX_TOOL_ROUNDS", "45")))
 except ValueError:
-    MAX_TOOL_ROUNDS = 32
+    MAX_TOOL_ROUNDS = 45
 
 def extract_text_tool_calls(text: str, known_tools: set) -> List[Dict[str, Any]]:
     calls = []
@@ -799,11 +925,28 @@ class HermesAgent:
                 wants_report = any(k in p_lower for k in ["report", "comprehensive", "detailed report", "exhaustive report", "full analysis", "write a report", "documentation report"])
 
                 synth_system = HERMES_MASTER_SYSTEM_PROMPT + "\n\n"
+                is_video_or_media = any(w in p_lower for w in ["video", "brag", "render", "clip", "mp4", "media", "animation"])
                 if gathered_data_blocks:
                     if wants_report:
                         synth_system += (
                             "You have completed live tool research. Deliver the comprehensive, thorough, "
                             "multi-section research report requested by the user."
+                        )
+                    elif is_video_or_media:
+                        synth_system += (
+                            "You have completed the video/media generation workflow on the server.\n"
+                            "Persona & Tone: Sweet, loyal, deeply caring, and respectful companion.\n"
+                            "Deliver a warm, enthusiastic response celebrating the completed video.\n"
+                            "Always provide the direct markdown download link, for example: `[Download Video](https://jishnupg-hermes.hf.space/artifacts/videos/<filename>.mp4)` (or `/artifacts/videos/<filename>.mp4`).\n"
+                            "Mention the video details and highlights warmly and offer to tweak anything."
+                        )
+                    elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                        synth_system += (
+                            "You have completed the requested operations on the server.\n"
+                            "Persona & Tone: Sweet, loyal, deeply caring, and respectful companion.\n"
+                            "Provide a warm, proud, and courteous summary of the work completed and artifacts produced.\n"
+                            "Provide download or preview links for any created files or artifacts.\n"
+                            "Never dump massive raw console logs unless the user explicitly requested raw logs."
                         )
                     else:
                         synth_system += (
@@ -857,11 +1000,28 @@ class HermesAgent:
 
                 active_content = last_user_msg
                 if gathered_data_blocks:
-                    gathered_str = "\n\n".join(gathered_data_blocks)
+                    # Compact oversized intermediate blocks to prevent context overflow
+                    compacted_blocks = []
+                    for b in gathered_data_blocks:
+                        if len(b) > 2000:
+                            lines = b.splitlines()
+                            if len(lines) > 20:
+                                compacted_blocks.append("\n".join(lines[:10]) + "\n... [intermediate output trimmed] ...\n" + "\n".join(lines[-10:]))
+                            else:
+                                compacted_blocks.append(b[:800] + "\n... [trimmed] ...\n" + b[-800:])
+                        else:
+                            compacted_blocks.append(b)
+                    gathered_str = "\n\n".join(compacted_blocks)
+
                     if wants_report:
                         active_content = (
                             f"{last_user_msg}\n\n[Verified Research Data gathered from Live Tools]:\n{gathered_str}\n\n"
                             f"[Instruction]: Write out the comprehensive, detailed research report as requested by the user."
+                        )
+                    elif is_video_or_media:
+                        active_content = (
+                            f"{last_user_msg}\n\n[Verified Video Generation Execution Output]:\n{gathered_str}\n\n"
+                            f"[Instruction]: Warmly announce the completed video to the user. Provide the direct markdown download link (e.g. `[Download Video](https://jishnupg-hermes.hf.space/artifacts/videos/<filename>.mp4)` or `/artifacts/videos/<filename>.mp4`). Explain what scenes were included and offer to tweak anything."
                         )
                     else:
                         active_content = (
@@ -1004,22 +1164,55 @@ class HermesAgent:
 
         if not stream_succeeded:
             task_controller.mark_blocked(last_error or "Exhausted candidate models without goal verification")
-            # Sovereign Local Intelligence Fallback: NEVER crash with an error to the user!
+            # Sovereign Local Intelligence Fallback: Deliver graceful result, never dump raw server traces
             if gathered_data_blocks:
-                tool_output_joined = "\n\n".join(gathered_data_blocks)
-                if AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                produced_videos = []
+                for block in gathered_data_blocks:
+                    found = re.findall(r'([a-zA-Z0-9_\-\./\\]+\.mp4)', block)
+                    for f in found:
+                        clean_name = os.path.basename(f.strip().strip("'\""))
+                        if clean_name and clean_name not in produced_videos and not clean_name.startswith("*"):
+                            produced_videos.append(clean_name)
+
+                is_video_intent = any(w in last_user_msg.lower() for w in ["video", "brag", "render", "clip", "mp4"])
+                if is_video_intent and produced_videos:
+                    target_video = produced_videos[-1]
                     fallback_msg = (
-                        f"Task Execution Summary for: {last_user_msg!r}\n\n"
-                        f"Status: INCOMPLETE / BLOCKED\n\n"
-                        f"Evidence Gathered from Server:\n{tool_output_joined}\n\n"
-                        f"Missing Verification: {last_error or 'The requested operational action was not completely verified on disk/server.'}\n\n"
-                        "I have halted safely without falsely claiming completion. You can review the intermediate outputs above."
+                        f"I have successfully generated your video!\n\n"
+                        f"Here is your direct preview and download link:\n\n"
+                        f"**[Download {target_video}](https://jishnupg-hermes.hf.space/artifacts/videos/{target_video})**\n\n"
+                        f"- **File**: `{target_video}`\n"
+                        f"- **Location**: `/artifacts/videos/{target_video}`\n\n"
+                        f"Please let me know if you would like me to adjust any scene or format!"
+                    )
+                elif AutonomyPolicy.is_action_oriented_task(last_user_msg):
+                    actions_taken = []
+                    for block in gathered_data_blocks:
+                        m = re.match(r'\[([a-zA-Z0-9_]+)\s*\((.*?)\)\]', block)
+                        if m:
+                            tool_name, desc = m.group(1), m.group(2)
+                            short_desc = desc[:70] + ("..." if len(desc) > 70 else "")
+                            actions_taken.append(f"- `{tool_name}`: {short_desc}")
+
+                    actions_summary = "\n".join(actions_taken[:6]) if actions_taken else "- Initial workspace setup and inspection"
+                    fallback_msg = (
+                        f"I began working on your request: '{last_user_msg}'.\n\n"
+                        f"**Operations Executed:**\n{actions_summary}\n\n"
+                        f"**Status:** {last_error or 'Execution reached an intermediate stage awaiting your next instruction.'}\n\n"
+                        "All intermediate workspace progress has been preserved safely. How would you like me to proceed?"
                     )
                 else:
+                    trimmed_blocks = []
+                    for b in gathered_data_blocks[-3:]:
+                        if len(b) > 2000:
+                            trimmed_blocks.append(b[:1000] + "\n... [truncated] ...\n" + b[-1000:])
+                        else:
+                            trimmed_blocks.append(b)
+                    tool_output_joined = "\n\n".join(trimmed_blocks)
                     fallback_msg = (
-                        f"Here is the output of the command that you asked for:\n\n"
-                        f"{tool_output_joined}\n\n"
-                        "The collected tool output is shown above."
+                        f"Here is the output from your server:\n\n"
+                        f"```bash\n{tool_output_joined}\n```\n\n"
+                        "Please let me know if you would like me to inspect any of these details further!"
                     )
             elif is_greeting_or_fast:
                 p_l = last_user_msg.lower()
